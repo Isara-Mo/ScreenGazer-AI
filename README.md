@@ -24,11 +24,8 @@ Visual Novel English learning and translation tool — Real-time screen capture 
 #### 1. Install Dependencies
 Ensure you have [`uv`](https://github.com/astral-sh/uv) installed, then run:
 ```bash
-# Install core dependencies
+# Install core dependencies (including PaddleOCR)
 uv sync
-
-# Optional: Install PaddleOCR for maximum accuracy (Recommended)
-uv sync --all-extras
 ```
 
 #### 2. Run the Program
@@ -69,11 +66,8 @@ The software supports **OpenAI-compatible APIs**, **DashScope**, and **Ollama**.
 #### 1. 安装依赖
 请先安装 Python 环境包管理器 [`uv`](https://github.com/astral-sh/uv)，然后在项目目录下运行：
 ```bash
-# 安装核心依赖
+# 安装全部依赖（已内置最强精度的 PaddleOCR 引擎）
 uv sync
-
-# 安装 PaddleOCR 获得最佳识别效果（强烈推荐）
-uv sync --all-extras
 ```
 
 #### 2. 启动程序
