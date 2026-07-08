@@ -39,7 +39,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "recognition_mode": "ocr",
 
     "ocr": {
-        "engine": "tesseract",                             # tesseract | paddleocr
+        "engine": "paddleocr",                             # tesseract | paddleocr
         "tesseract_path": "E:/Tool/Tesseract/tesseract.exe",
         "tesseract_lang": "eng",
         "paddleocr_lang": "en",
@@ -47,16 +47,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
     "prompts": {
         "translate_text": (
-            "You are a professional English-Chinese translator specializing in visual novels.\n"
-            "The following text may contain OCR recognition errors. Please:\n"
-            "1. Correct any OCR errors in the English text (fix typos, missing spaces, wrong characters)\n"
-            "2. Translate the corrected English text to fluent, natural Chinese\n\n"
+            "Please translate the English text to Chinese\n\n"
             "Respond ONLY with a valid JSON object, no extra text:\n"
             "{\"corrected\": \"corrected English text here\", \"translation\": \"中文翻译在这里\"}\n\n"
             "Text to process:\n{text}"
         ),
         "translate_vl": (
-            "You are a professional English-Chinese translator specializing in visual novels.\n"
+            "You are a professional English-Chinese translator.\n"
             "Look at the image and extract the dialog/subtitle English text.\n"
             "1. Provide the clean, corrected English text\n"
             "2. Translate it to fluent, natural Chinese\n\n"
@@ -83,8 +80,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
     "watcher": {
         "enabled": True,
-        "poll_interval": 0.5,       # 轮询间隔（秒）
-        "stability_count": 3,       # 字数稳定所需连续次数
+        "poll_interval": 0.3,       # 轮询间隔（秒）
+        "stability_count": 2,       # 字数稳定所需连续次数
         "hash_threshold": 8,        # 图像哈希差异阈值（0-64）
     },
 
