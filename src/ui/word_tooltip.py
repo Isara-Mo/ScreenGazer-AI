@@ -77,6 +77,22 @@ class WordTooltipWidget(QWidget):
         top_row.addWidget(self._pos_label)
         top_row.addStretch()
 
+        # 收藏按钮
+        self._fav_btn = QPushButton("⭐")
+        self._fav_btn.setFixedSize(22, 22)
+        self._fav_btn.setToolTip("收藏单词")
+        self._fav_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {CLOSE_BG}; color: #fbbf24;
+                border-radius: 4px; font-size: 13px; border: none;
+            }}
+            QPushButton:hover {{
+                background: {CLOSE_HOVER};
+            }}
+        """)
+        self._fav_btn.clicked.connect(self._on_favorite_clicked)
+        top_row.addWidget(self._fav_btn)
+
         # 关闭按钮
         close_btn = QPushButton("×")
         close_btn.setFixedSize(20, 20)
@@ -133,6 +149,11 @@ class WordTooltipWidget(QWidget):
         self._word_label.setText(word)
         self._meaning_label.setText(meaning)
 
+        if word:
+            self._fav_btn.show()
+        else:
+            self._fav_btn.hide()
+
         if pos_str:
             self._pos_label.setText(pos_str)
             self._pos_label.show()
@@ -145,6 +166,8 @@ class WordTooltipWidget(QWidget):
         else:
             self._note_label.hide()
 
+        self._fav_btn.setText("⭐")
+        self._fav_btn.setEnabled(True)
         self.adjustSize()
 
         if pos:
@@ -166,9 +189,19 @@ class WordTooltipWidget(QWidget):
         self._meaning_label.setText("查询中...")
         self._pos_label.hide()
         self._note_label.hide()
+        self._fav_btn.hide()
         self.adjustSize()
         self.show()
         self.raise_()
+
+    def _on_favorite_clicked(self) -> None:
+        """收藏当前单词"""
+        word = self._word_label.text()
+        if word:
+            from src.utils.vocabulary import add_word
+            add_word(word)
+            self._fav_btn.setText("🌟")
+            self._fav_btn.setEnabled(False)
 
     def show_error(self, error: str) -> None:
         """显示错误信息"""

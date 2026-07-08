@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFrame, QSystemTrayIcon, QMenu,
     QStatusBar, QGroupBox, QFormLayout, QComboBox,
-    QApplication, QMessageBox,
+    QApplication, QMessageBox, QFileDialog,
 )
 
 from src.utils.config_manager import ConfigManager
@@ -196,8 +196,12 @@ class MainWindow(QMainWindow):
         title_row.addLayout(title_col)
         title_row.addStretch()
 
+        export_btn = QPushButton("📤 导出单词")
+        export_btn.clicked.connect(self._export_vocab)
+        
         config_btn = QPushButton("⚙ 设置")
         config_btn.clicked.connect(self._open_config)
+        title_row.addWidget(export_btn)
         title_row.addWidget(config_btn)
         layout.addLayout(title_row)
 
@@ -628,6 +632,27 @@ class MainWindow(QMainWindow):
     def _on_lookup_error(self, error: str) -> None:
         if self._word_tooltip:
             self._word_tooltip.show_error(error)
+
+    # ─── 单词本管理 ──────────────────────────────────────────
+    def _export_vocab(self) -> None:
+        from src.utils.vocabulary import get_all_words, clear_vocab
+        words = get_all_words()
+        if not words:
+            QMessageBox.information(self, "导出单词本", "当前收藏夹为空！没有可以导出的单词。")
+            return
+            
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "导出单词本", "vocab.txt", "文本文件 (*.txt)"
+        )
+        if file_path:
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    for w in words:
+                        f.write(f"{w}\n")
+                clear_vocab()
+                QMessageBox.information(self, "导出成功", f"成功导出 {len(words)} 个单词！\n已清空当前收藏夹。")
+            except Exception as e:
+                QMessageBox.critical(self, "导出失败", f"导出时发生错误:\n{e}")
 
     # ─── 配置与 UI 更新 ──────────────────────────────────────
     def _open_config(self) -> None:
