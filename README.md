@@ -1,119 +1,106 @@
-# VN 翻译助手 🎮
+# Sceen Translation Assistant 🎮
 
-视觉小说英语学习翻译工具 — 实时截图识别 + AI 翻译 + 单词查询
+[English](#english) | [中文](#中文)
 
-## 功能特性
+---
 
-| 功能 | 说明 |
-|------|------|
-| 📸 区域截图 | 鼠标拖拽选定屏幕区域，支持选择目标游戏窗口 |
-| 🔍 OCR 识别 | Tesseract（本地快速）或 PaddleOCR（可选精准） |
-| 🤖 AI 翻译 | 矫正 OCR 错误 + 翻译为中文，JSON 格式结构化返回 |
-| 🖼 VL 直接识别 | 截图直接发给视觉大模型识别+翻译（适合艺术字） |
-| 📖 单词查词 | 单击英文单词即可查看在语境中的含义 |
-| ⌨ 快捷键触发 | Ctrl+Shift+T 立即翻译（可自定义） |
-| 👁 自动监视 | 0.5s 轮询检测画面变化，文本稳定后自动触发 |
-| 🔌 多平台AI | DashScope（通义）、OpenAI 兼容、Ollama 本地 |
+<a id="english"></a>
+## English (Default)
 
-## 快速开始
+Visual Novel English learning and translation tool — Real-time screen capture + AI Translation + Interactive Word Lookup.
 
-### 1. 安装依赖
+### Features
+- 📸 **Smart Region Capture**: Drag to select a screen region. Supports binding to a specific game window so the capture box moves automatically when the window is moved.
+- 🔍 **OCR Engine**: Tesseract (fast) or PaddleOCR (highly accurate, locked to stable v2.x for best performance).
+- 🤖 **AI Translation**: Corrects OCR errors and translates to Chinese, with JSON structured output.
+- 🖼 **VL Mode**: Sends screenshots directly to Vision-Language models (e.g., `qwen-vl-plus`) for direct extraction and translation (perfect for highly stylized fonts).
+- 📖 **Interactive Word Lookup**: Click any English word in the result panel to see its contextual meaning. Drag to select phrases.
+- ⌨ **Hotkeys**: Press `Ctrl+Shift+T` to instantly translate (customizable).
+- 👁 **Auto Monitor**: Polls the screen every 0.5s and auto-translates when text stabilizes.
+- ⚡ **Performance Optimization**: Automatically disables deep-thinking mode for compatible AI APIs to ensure rapid translation responses (3-5s).
 
+### Quick Start
+
+#### 1. Install Dependencies
+Ensure you have [`uv`](https://github.com/astral-sh/uv) installed, then run:
 ```bash
-# 安装核心依赖
+# Install core dependencies
 uv sync
 
-# 安装 PaddleOCR（可选，体积约 2GB）
-uv pip install paddlepaddle paddleocr
+# Optional: Install PaddleOCR for maximum accuracy (Recommended)
+uv sync --all-extras
 ```
 
-### 2. 启动程序
-
+#### 2. Run the Program
 ```bash
 uv run main.py
 ```
 
-### 3. 首次配置
+#### 3. First-time Configuration
+1. Click the **⚙ Settings (设置)** button.
+2. In the **🤖 Model** tab, enter your API Key and Base URL.
+3. In the **🔍 OCR** tab, select your preferred OCR engine.
+4. Click **Save and Apply (保存并应用)**.
 
-1. 点击 **⚙ 设置** 按钮
-2. 在 **🤖 模型** 标签页填写 API Key
-3. 在 **🔍 OCR** 标签页确认 Tesseract 路径
-4. 点击 **保存并应用**
+### AI Provider Configuration
+The software supports **OpenAI-compatible APIs**, **DashScope**, and **Ollama**.
+- **Text Model (For OCR Mode)**: Fast models like `qwen-turbo`, `gpt-4o-mini`.
+- **VL Model (For VL Mode)**: Multimodal models like `qwen-vl-plus`, `gpt-4o`. (Do NOT use text-only models like `qwen3.6-flash` here).
 
-### 4. 使用流程
+---
 
-1. 点击 **🖱 拖拽选择区域** 框选游戏对话框区域
-2. 点击 **▶ 开始监视** 启动自动检测
-3. 游戏出现新对话时自动触发翻译
-4. 或按 **Ctrl+Shift+T** 手动触发
-5. 在结果面板中**单击英文单词**查询语境含义
+<a id="中文"></a>
+## 中文
 
-## AI 提供商配置
+视觉小说英语学习翻译工具 — 实时截图识别 + AI 翻译 + 交互式单词查询。
 
-### DashScope（推荐，通义千问）
+### 功能特性
+- 📸 **智能区域截图**: 鼠标拖拽选定屏幕区域，支持动态绑定目标游戏窗口。无论窗口如何移动或高 DPI 缩放，截图区域都能精准追踪。
+- 🔍 **OCR 识别**: 支持 Tesseract（本地快速）或 PaddleOCR（极其精准，已锁定至无 Bug 的稳定 2.x 版本）。
+- 🤖 **AI 翻译**: 自动矫正 OCR 错误并翻译为中文，要求模型使用 JSON 格式结构化返回，避免格式错乱。
+- 🖼 **VL 直接识别**: 截图直接发给视觉大模型（如 `qwen-vl-plus`）识别+翻译（完美应对艺术字和特殊排版）。
+- 📖 **交互式查词**: 在结果面板中**单击**任何英文单词，即可在弹窗中查看其在当前语境中的精确含义。支持拖选词组。
+- ⌨ **快捷键触发**: 按 `Ctrl+Shift+T` 立即进行翻译（可自由自定义）。
+- 👁 **自动监视**: 0.5s 轮询检测画面变化，当游戏对话文本输出完毕稳定后，自动触发翻译。
+- ⚡ **极致速度优化**: 自动针对阿里云百炼等大模型关闭“深度思考”模式，跳过无意义的推理过程，实现极速响应（并在控制台打印各阶段耗时）。
 
+### 快速开始
+
+#### 1. 安装依赖
+请先安装 Python 环境包管理器 [`uv`](https://github.com/astral-sh/uv)，然后在项目目录下运行：
+```bash
+# 安装核心依赖
+uv sync
+
+# 安装 PaddleOCR 获得最佳识别效果（强烈推荐）
+uv sync --all-extras
 ```
-Base URL: https://dashscope.aliyuncs.com/api/v1
-API Key: sk-xxxxxxxxxxxxxxxx
-文本模型: qwen-turbo
-VL 模型: qwen3.6-flash
+
+#### 2. 启动程序
+```bash
+uv run main.py
 ```
 
-如有自定义 workspace：
-```
-Base URL: https://[workspace-id].cn-beijing.maas.aliyuncs.com/api/v1
-```
+#### 3. 首次配置
+1. 点击主界面上的 **⚙ 设置** 按钮。
+2. 在 **🤖 模型** 标签页填写你的 API Key（支持通义千问、OpenAI 或 Ollama）。
+3. 在 **🔍 OCR** 标签页选择 OCR 引擎（推荐 PaddleOCR）。
+4. 点击 **保存并应用**。
 
-### Ollama（本地，免费）
+### AI 提供商配置参考
+程序全面兼容标准的 **OpenAI 接口**、**DashScope 专属接口**以及**本地 Ollama**。
+- **文本模型（用于 OCR+翻译模式）**：推荐速度快的模型，如 `qwen-turbo`。
+- **VL 模型（用于纯视觉模式）**：必须填写支持图像识别的多模态模型，如 `qwen-vl-plus` 或 `qwen-vl-max`。（注意：切勿填入 `qwen3.6-flash` 等纯文本模型，否则将报错）。
 
-```
-Base URL: http://localhost:11434
-文本模型: llama3.2
-VL 模型: llava
-```
-
-## OCR 配置
-
-已配置的 Tesseract：
-- 路径: `E:/Tool/Tesseract/tesseract.exe`  
-- 参数: `-l eng`
-
-## 识别模式选择
-
-| 模式 | 适用场景 | 速度 | 准确度 |
-|------|---------|------|--------|
-| OCR + LLM | 普通字体对话框 | 快 | 良好 |
-| VL 大模型 | 艺术字、特殊排版 | 较慢 | 最佳 |
-
-## 快捷键
-
-| 快捷键 | 功能 |
-|--------|------|
-| `Ctrl+Shift+T` | 立即触发翻译（默认，可自定义）|
-| 单击英文单词 | 查询该词在语境中的含义 |
-| `Ctrl` + 拖选 | 选择多个单词查询词组含义 |
-
-## 项目结构
-
-```
+### 项目结构
+```text
 translate_game/
-├── main.py               # 入口
-├── pyproject.toml        # uv 项目配置
-├── .python-version       # Python 版本锁定
+├── main.py               # 启动入口
+├── pyproject.toml        # uv 依赖配置文件（已修复 Paddle 兼容性）
+├── .python-version       # 锁定 Python 运行版本
 └── src/
-    ├── core/             # 核心逻辑
-    │   ├── capture.py    # 屏幕捕获
-    │   ├── ocr_engine.py # OCR 引擎
-    │   ├── llm_client.py # AI 客户端
-    │   ├── translator.py # 翻译协调
-    │   └── watcher.py    # 变化检测
-    ├── workers/          # QThread 异步任务
-    ├── ui/               # PySide6 界面
-    └── utils/            # 工具模块
+    ├── core/             # 核心逻辑（截图/OCR/大模型/翻译调度）
+    ├── workers/          # QThread 异步多线程任务
+    ├── ui/               # PySide6 图形界面（悬浮窗/查词弹窗）
+    └── utils/            # 通用工具模块
 ```
-
-## 注意事项
-
-- **首次运行** PaddleOCR 会自动下载约 200MB 的模型文件
-- 运行在 **Anaconda 环境**的用户：程序已处理 Qt DLL 冲突，使用 `uv run` 启动即可
-- 快捷键需要程序在**前台或系统托盘**运行时才有效
