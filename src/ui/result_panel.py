@@ -64,7 +64,6 @@ QTextEdit#englishText {
     padding: 10px;
     selection-background-color: #4c1d95;
     selection-color: #e2e8f0;
-    font-size: 13px;
     line-height: 1.6;
 }
 
@@ -75,7 +74,6 @@ QTextEdit#chineseText {
     border: 1px solid #1e3a2a;
     border-radius: 8px;
     padding: 10px;
-    font-size: 14px;
     line-height: 1.8;
 }
 
