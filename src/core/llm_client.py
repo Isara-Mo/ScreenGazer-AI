@@ -82,7 +82,7 @@ class OpenAIClient(LLMClient):
             timeout=timeout,
         )
         self._model = model
-        self._vl_model = vl_model or model
+        self._vl_model = (vl_model or "").strip()
         self._name = "OpenAI-Compatible"
 
     @property
@@ -102,6 +102,8 @@ class OpenAIClient(LLMClient):
         return response.choices[0].message.content or ""
 
     def chat_vision(self, text_prompt: str, image: Image.Image) -> str:
+        if not self._vl_model:
+            raise RuntimeError("未配置 VL 模型。请在设置中配置【VL 模型】后再试。")
         b64_img = _image_to_data_uri(image)
         messages = [
             {
@@ -160,7 +162,7 @@ class DashScopeClient(LLMClient):
         if base_url and base_url.strip():
             self._ds.base_http_api_url = base_url.strip()
         self._text_model = text_model
-        self._vl_model = vl_model
+        self._vl_model = (vl_model or "").strip()
         self._timeout = timeout
 
     @property
@@ -168,22 +170,65 @@ class DashScopeClient(LLMClient):
         return "DashScope"
 
     def chat(self, messages: list[dict]) -> str:
-        """文本对话，使用 Generation API"""
-        response = self._ds.Generation.call(
+        """文本对话，使用 Generation API，失败时回退至 MultiModal API"""
+        try:
+            response = self._ds.Generation.call(
+                api_key=self._ds.api_key,
+                model=self._text_model,
+                messages=messages,
+                result_format="message",
+                enable_thinking=False,
+            )
+            # 专有云/私有空间部署的 VL 大模型，对 Generation 接口可能返回 400 url error
+            if response.status_code == 400 and ("url error" in str(response.message).lower() or "check url" in str(response.message).lower()):
+                return self._chat_via_multimodal(messages)
+
+            if response.status_code != 200:
+                raise RuntimeError(
+                    f"DashScope 请求失败 [{response.status_code}]: {response.message}"
+                )
+            content = response.output.choices[0].message.content
+            # content 可能是字符串或列表
+            if isinstance(content, list):
+                parts = [c.get("text", "") for c in content if isinstance(c, dict)]
+                return "".join(parts)
+            return str(content)
+        except Exception as e:
+            # 如果因为网络或 URL 错误报错，也尝试使用多模态接口
+            if "url error" in str(e).lower() or "400" in str(e):
+                try:
+                    return self._chat_via_multimodal(messages)
+                except Exception:
+                    pass
+            raise
+
+    def _chat_via_multimodal(self, messages: list[dict]) -> str:
+        """使用 MultiModalConversation 模拟文本对话（用于专有云节点部署的 VL 模型）"""
+        mm_messages = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                mm_messages.append({"role": role, "content": [{"text": content}]})
+            else:
+                mm_messages.append(msg)
+
+        response = self._ds.MultiModalConversation.call(
             api_key=self._ds.api_key,
             model=self._text_model,
-            messages=messages,
-            result_format="message",
+            messages=mm_messages,
+            enable_thinking=False,
         )
         if response.status_code != 200:
             raise RuntimeError(
-                f"DashScope 请求失败 [{response.status_code}]: {response.message}"
+                f"DashScope 文本回退多模态请求失败 [{response.status_code}]: {response.message}"
             )
         content = response.output.choices[0].message.content
-        # content 可能是字符串或列表
         if isinstance(content, list):
-            parts = [c.get("text", "") for c in content if isinstance(c, dict)]
-            return "".join(parts)
+            for item in content:
+                if isinstance(item, dict) and "text" in item:
+                    return item["text"]
+            return str(content)
         return str(content)
 
     def chat_vision(self, text_prompt: str, image: Image.Image) -> str:
@@ -197,19 +242,8 @@ class DashScopeClient(LLMClient):
         
         qwen3.6-flash 等文本模型不支持图像输入，会返回 400 错误。
         """
-        # 检查是否是已知的文本模型（给出友好提示）
-        vl_model_lower = self._vl_model.lower()
-        is_likely_text_only = not any(
-            vl_model_lower.startswith(p) for p in _DASHSCOPE_VL_MODELS
-        )
-        if is_likely_text_only:
-            raise RuntimeError(
-                f"当前 VL 模型 '{self._vl_model}' 可能不支持图像输入。\n"
-                f"请在设置 → 模型 → DashScope → VL模型 中更换为视觉模型，例如:\n"
-                f"  • qwen-vl-plus\n"
-                f"  • qwen-vl-max\n"
-                f"  • qwen2.5-vl-7b-instruct"
-            )
+        if not self._vl_model:
+            raise RuntimeError("未配置 VL 模型。请在设置中配置【VL 模型】后再试。")
 
         # 优先使用临时文件（比 base64 更稳定）
         temp_path = _save_image_to_temp(image)
@@ -252,6 +286,7 @@ class DashScopeClient(LLMClient):
             api_key=self._ds.api_key,
             model=self._vl_model,
             messages=messages,
+            enable_thinking=False,
         )
         return self._extract_vl_response(response)
 
@@ -271,6 +306,7 @@ class DashScopeClient(LLMClient):
             api_key=self._ds.api_key,
             model=self._vl_model,
             messages=messages,
+            enable_thinking=False,
         )
         return self._extract_vl_response(response)
 

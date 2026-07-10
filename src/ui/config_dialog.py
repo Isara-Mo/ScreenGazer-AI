@@ -622,6 +622,30 @@ class ConfigDialog(QDialog):
         c.save()
 
     def _save_and_close(self) -> None:
+        # 验证 VL 模式配置
+        modes = ["ocr", "vl"]
+        selected_mode = modes[self._mode_combo.currentIndex()]
+        
+        providers = ["dashscope", "openai", "ollama"]
+        selected_provider = providers[self._provider_combo.currentIndex()]
+        
+        vl_model = ""
+        if selected_provider == "dashscope":
+            vl_model = self._ds_vl_model.text().strip()
+        elif selected_provider == "openai":
+            vl_model = self._oa_vl_model.text().strip()
+        elif selected_provider == "ollama":
+            vl_model = self._ol_vl_model.text().strip()
+            
+        if selected_mode == "vl" and not vl_model:
+            QMessageBox.warning(
+                self,
+                "无法保存配置",
+                f"当前识别模式选择为【VL大模型直接识别】，但【{selected_provider.upper()}】的 VL 模型为空，无法启用此模式。\n\n"
+                "请先在对应标签页填写 【VL 模型】 名称，或将识别模式更改为【OCR+文本LLM】。"
+            )
+            return
+
         self._save_values()
         self.config_changed.emit()
         self.accept()
