@@ -148,9 +148,14 @@ class PaddleOCREngine(OCREngine):
 
         from paddleocr import PaddleOCR
 
+        # 强制静默 ppocr 内部的 logging 输出
+        import logging
+        logging.getLogger("ppocr").setLevel(logging.ERROR)
+        logging.getLogger("ppocr").propagate = False
+
         # 尝试 3.x API（参数更少，简洁）
         try:
-            self._ocr = PaddleOCR(lang=self.lang)
+            self._ocr = PaddleOCR(lang=self.lang, show_log=False)
             # 检查是否支持 predict()（3.x 特有）
             if hasattr(self._ocr, 'predict'):
                 self._api_version = 3
