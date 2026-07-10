@@ -249,11 +249,13 @@ class ResultPanel(QWidget):
         )
         self.setObjectName("resultPanel")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setMinimumSize(380, 300)
+        self.setMinimumSize(380, 280)
         self.resize(500, 450)
 
         self._english_context: str = ""   # 保存矫正英文（供查词用）
         self._drag_pos: Optional[QPoint] = None
+        self._font_size_en: int = 13
+        self._font_size_zh: int = 14
 
         self.setStyleSheet(PANEL_STYLE)
         self._setup_ui()
@@ -299,6 +301,15 @@ class ResultPanel(QWidget):
         tb_layout.addWidget(self._loading_label)
         tb_layout.addWidget(self._status_label)
 
+        # 字体大小调节按钮
+        font_dec_btn = self._make_window_btn("A-", "#374151", self._decrease_font)
+        font_inc_btn = self._make_window_btn("A+", "#374151", self._increase_font)
+        font_dec_btn.setToolTip("缩小字体")
+        font_inc_btn.setToolTip("放大字体")
+        tb_layout.addSpacing(4)
+        tb_layout.addWidget(font_dec_btn)
+        tb_layout.addWidget(font_inc_btn)
+
         # 关闭/隐藏按钮
         hide_btn = self._make_window_btn("─", "#374151", self.hide)
         tb_layout.addSpacing(6)
@@ -322,7 +333,7 @@ class ResultPanel(QWidget):
         en_header.addWidget(self._copy_en_btn)
 
         self._english_edit = ClickableTextEdit()
-        self._english_edit.setFixedHeight(140)
+        self._english_edit.setMinimumHeight(80)
         self._english_edit.setPlaceholderText("矫正后的英文将显示在这里...\n单击单词查询含义，Ctrl+拖拽选多词")
         self._english_edit.word_lookup_requested.connect(self._on_word_lookup)
 
@@ -338,9 +349,8 @@ class ResultPanel(QWidget):
         self._chinese_edit = QTextEdit()
         self._chinese_edit.setObjectName("chineseText")
         self._chinese_edit.setReadOnly(True)
+        self._chinese_edit.setMinimumHeight(80)
         self._chinese_edit.setPlaceholderText("中文翻译将显示在这里...")
-        zh_font = QFont("Microsoft YaHei", 14)
-        self._chinese_edit.setFont(zh_font)
 
         # OCR 原文提示（可展开）
         self._ocr_label = QLabel()
@@ -352,10 +362,13 @@ class ResultPanel(QWidget):
         self._ocr_label.hide()
 
         content_layout.addLayout(en_header)
-        content_layout.addWidget(self._english_edit)
+        content_layout.addWidget(self._english_edit, 1)   # stretch=1，随窗口缩放
         content_layout.addLayout(zh_header)
-        content_layout.addWidget(self._chinese_edit)
+        content_layout.addWidget(self._chinese_edit, 1)   # stretch=1，随窗口缩放
         content_layout.addWidget(self._ocr_label)
+
+        # 应用默认字体大小
+        self._apply_font_sizes()
 
         container_layout.addWidget(content)
 
@@ -367,8 +380,17 @@ class ResultPanel(QWidget):
     def _setup_size_grip(self) -> None:
         """右下角调整大小控件"""
         grip = QSizeGrip(self)
-        grip.setFixedSize(16, 16)
-        grip.setStyleSheet("background: transparent;")
+        grip.setFixedSize(18, 18)
+        grip.setStyleSheet("""
+            QSizeGrip {
+                background: transparent;
+                image: none;
+                border: none;
+                border-right: 2px solid #4b5563;
+                border-bottom: 2px solid #4b5563;
+                border-radius: 2px;
+            }
+        """)
 
     def _make_window_btn(self, text: str, color: str, callback) -> QPushButton:
         btn = QPushButton(text)
@@ -398,6 +420,25 @@ class ResultPanel(QWidget):
         """)
         btn.clicked.connect(callback)
         return btn
+
+    # ─── 字体大小 ────────────────────────────────────────────
+    def _increase_font(self) -> None:
+        self._font_size_en = min(self._font_size_en + 1, 28)
+        self._font_size_zh = min(self._font_size_zh + 1, 28)
+        self._apply_font_sizes()
+
+    def _decrease_font(self) -> None:
+        self._font_size_en = max(self._font_size_en - 1, 9)
+        self._font_size_zh = max(self._font_size_zh - 1, 9)
+        self._apply_font_sizes()
+
+    def _apply_font_sizes(self) -> None:
+        en_font = QFont("Segoe UI", self._font_size_en)
+        self._english_edit.setFont(en_font)
+        zh_font = QFont("Microsoft YaHei", self._font_size_zh)
+        self._chinese_edit.setFont(zh_font)
+        self._status_label.setText(f"字号: EN {self._font_size_en} / ZH {self._font_size_zh}")
+        QTimer.singleShot(2000, lambda: self._status_label.setText("就绪"))
 
     # ─── 拖动逻辑 ────────────────────────────────────────────
     def _title_mouse_press(self, event: QMouseEvent) -> None:
