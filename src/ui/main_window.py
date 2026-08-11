@@ -336,17 +336,12 @@ class MainWindow(QMainWindow):
             )
 
             # 主 LLM 客户端
-            provider = self._cfg.get("provider", default="dashscope")
-            provider_cfg = self._cfg.get(provider) or {}
-            self._llm_client = create_client(provider, provider_cfg)
+            active_profile = self._cfg.get_active_model_profile()
+            self._llm_client = create_client(active_profile)
 
             # 查词客户端
-            lookup_provider = self._cfg.get("word_lookup_provider", default="same")
-            if lookup_provider == "same":
-                self._lookup_client = self._llm_client
-            else:
-                lp_cfg = self._cfg.get(lookup_provider) or {}
-                self._lookup_client = create_client(lookup_provider, lp_cfg)
+            lookup_profile = self._cfg.get_active_lookup_model_profile()
+            self._lookup_client = create_client(lookup_profile)
 
             # 翻译协调器
             self._translator = Translator(
@@ -675,12 +670,20 @@ class MainWindow(QMainWindow):
 
     def _update_config_labels(self) -> None:
         mode = self._cfg.get("recognition_mode", default="ocr")
-        provider = self._cfg.get("provider", default="dashscope")
+        active_profile = self._cfg.get_active_model_profile()
         ocr_engine = self._cfg.get("ocr", "engine", default="tesseract")
 
         mode_text = "OCR + 文本LLM" if mode == "ocr" else "VL 大模型直接识别"
         self._mode_label.setText(mode_text)
-        self._provider_label.setText(provider.capitalize())
+
+        if active_profile:
+            p_name = active_profile.get("name", "未配置")
+            m_name = active_profile.get("text_model", "")
+            display_str = f"{p_name} ({m_name})" if m_name else p_name
+        else:
+            display_str = "未配置模型"
+
+        self._provider_label.setText(display_str)
         self._ocr_label.setText(ocr_engine.capitalize())
         self._hotkey_hint_label.setText(
             f"快捷键: {self._cfg.get('hotkey', default='ctrl+shift+t').upper()} 立即翻译"

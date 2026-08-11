@@ -35,14 +35,9 @@ uv run main.py
 
 #### 3. First-time Configuration
 1. Click the **⚙ Settings (设置)** button.
-2. In the **🤖 Model** tab, enter your API Key and Base URL.
+2. In the **🤖 Model Settings (模型配置)** tab, create or edit your AI model profiles (e.g. DashScope, OpenAI, Ollama, DeepSeek).
 3. In the **🔍 OCR** tab, select your preferred OCR engine.
 4. Click **Save and Apply (保存并应用)**.
-
-### AI Provider Configuration
-The software supports **OpenAI-compatible APIs**, **DashScope**, and **Ollama**.
-- **Text Model (For OCR Mode)**: Fast models like `qwen-turbo`, `gpt-4o-mini`.
-- **VL Model (For VL Mode)**: Multimodal models like `qwen-vl-plus`, `gpt-4o`. (Do NOT use text-only models like `qwen3.6-flash` here).
 
 ---
 
@@ -77,14 +72,10 @@ uv run main.py
 
 #### 3. 首次配置
 1. 点击主界面上的 **⚙ 设置** 按钮。
-2. 在 **🤖 模型** 标签页填写你的 API Key（支持通义千问、OpenAI 或 Ollama）。
+2. 在 **🤖 模型配置** 标签页新建或编辑 AI 模型配置（支持通义千问、OpenAI、Ollama、DeepSeek 等）。
 3. 在 **🔍 OCR** 标签页选择 OCR 引擎（推荐 PaddleOCR）。
 4. 点击 **保存并应用**。
 
-### AI 提供商配置参考
-程序全面兼容标准的 **OpenAI 接口**、**DashScope 专属接口**以及**本地 Ollama**。
-- **文本模型（用于 OCR+翻译模式）**：推荐速度快的模型，如 `qwen-turbo`。
-- **VL 模型（用于纯视觉模式）**：必须填写支持图像识别的多模态模型，如 `qwen-vl-plus` 或 `qwen-vl-max`。（注意：切勿填入 `qwen3.6-flash` 等纯文本模型，否则将报错）。
 
 ### 项目结构
 ```text

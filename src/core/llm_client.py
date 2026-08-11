@@ -354,34 +354,56 @@ class OllamaClient(OpenAIClient):
 # ─────────────────────────────────────────────────────────────
 # 工厂函数
 # ─────────────────────────────────────────────────────────────
-def create_client(provider: str, cfg: dict) -> LLMClient:
+def create_client(provider: str | dict, cfg: dict | None = None) -> LLMClient:
     """
-    根据提供商名称和配置字典创建客户端
-    :param provider: "openai" | "dashscope" | "ollama"
-    :param cfg: 对应提供商的配置子字典
+    根据模型配置 Profile 字典或提供商名称创建客户端
+    :param provider: 可以是 Profile 字典 (例如 {"api_type": "dashscope", ...})，
+                     或者是旧版的 provider 名称字符串 ("openai" | "dashscope" | "ollama")
+    :param cfg: (可选) 旧版模式下对应提供商的配置子字典
     """
-    if provider == "openai":
-        return OpenAIClient(
-            base_url=cfg.get("base_url", "https://api.openai.com/v1"),
-            api_key=cfg.get("api_key", ""),
-            model=cfg.get("text_model", "gpt-4o-mini"),
-            vl_model=cfg.get("vl_model", "gpt-4o"),
-        )
-    elif provider == "dashscope":
+    if isinstance(provider, dict):
+        profile = provider
+        api_type = profile.get("api_type", "dashscope")
+        base_url = profile.get("base_url", "")
+        api_key = profile.get("api_key", "")
+        text_model = profile.get("text_model", "")
+        vl_model = profile.get("vl_model", "")
+    else:
+        api_type = provider
+        cfg = cfg or {}
+        base_url = cfg.get("base_url", "")
+        api_key = cfg.get("api_key", "")
+        text_model = cfg.get("text_model", "")
+        vl_model = cfg.get("vl_model", "")
+
+    if api_type == "dashscope":
         return DashScopeClient(
-            api_key=cfg.get("api_key", ""),
-            text_model=cfg.get("text_model", "qwen-turbo"),
-            vl_model=cfg.get("vl_model", "qwen-vl-plus"),
-            base_url=cfg.get("base_url", ""),
+            api_key=api_key,
+            text_model=text_model or "qwen-turbo",
+            vl_model=vl_model or "qwen-vl-plus",
+            base_url=base_url,
         )
-    elif provider == "ollama":
+    elif api_type == "openai":
+        return OpenAIClient(
+            base_url=base_url or "https://api.openai.com/v1",
+            api_key=api_key,
+            model=text_model or "gpt-4o-mini",
+            vl_model=vl_model or "gpt-4o",
+        )
+    elif api_type == "ollama":
         return OllamaClient(
-            base_url=cfg.get("base_url", "http://localhost:11434"),
-            text_model=cfg.get("text_model", "llama3.2"),
-            vl_model=cfg.get("vl_model"),
+            base_url=base_url or "http://localhost:11434",
+            text_model=text_model or "llama3.2",
+            vl_model=vl_model,
         )
     else:
-        raise ValueError(f"未知提供商: {provider}")
+        return OpenAIClient(
+            base_url=base_url or "https://api.openai.com/v1",
+            api_key=api_key,
+            model=text_model,
+            vl_model=vl_model,
+        )
+
 
 
 def parse_json_response(response: str) -> dict:

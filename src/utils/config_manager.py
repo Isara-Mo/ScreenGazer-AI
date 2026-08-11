@@ -9,31 +9,42 @@ from pathlib import Path
 from typing import Any
 
 
-# 默认配置
-DEFAULT_CONFIG: dict[str, Any] = {
-    "provider": "dashscope",          # 主模型提供商: openai | dashscope | ollama
-    "word_lookup_provider": "same",   # 查词模型提供商: same | openai | dashscope | ollama
-
-    "openai": {
-        "base_url": "https://api.openai.com/v1",
-        "api_key": "",
-        "text_model": "gpt-4o-mini",
-        "vl_model": "gpt-4o",
-    },
-
-    "dashscope": {
-        # 标准 DashScope 端点，或填写自定义 workspace URL
+# 默认模型配置列表
+DEFAULT_MODELS: list[dict[str, Any]] = [
+    {
+        "id": "dashscope_default",
+        "name": "DashScope (阿里云通义)",
+        "api_type": "dashscope",
         "base_url": "https://dashscope.aliyuncs.com/api/v1",
         "api_key": "",
         "text_model": "qwen-turbo",
         "vl_model": "qwen3.6-flash",
     },
-
-    "ollama": {
+    {
+        "id": "openai_default",
+        "name": "OpenAI 兼容 API",
+        "api_type": "openai",
+        "base_url": "https://api.openai.com/v1",
+        "api_key": "",
+        "text_model": "gpt-4o-mini",
+        "vl_model": "gpt-4o",
+    },
+    {
+        "id": "ollama_default",
+        "name": "Ollama 本地模型",
+        "api_type": "ollama",
         "base_url": "http://localhost:11434",
+        "api_key": "",
         "text_model": "llama3.2",
         "vl_model": "llava",
     },
+]
+
+# 默认配置
+DEFAULT_CONFIG: dict[str, Any] = {
+    "active_model_id": "dashscope_default",         # 主模型 ID
+    "active_word_lookup_model_id": "same",          # 查词模型 ID ("same" 表示与主模型相同)
+    "models": DEFAULT_MODELS,                        # 模型配置 Profile 列表
 
     # 识别模式: ocr(OCR+文本LLM) | vl(VL大模型直接识别)
     "recognition_mode": "ocr",
@@ -137,14 +148,57 @@ class ConfigManager:
         return result
 
     def _load(self) -> None:
-        """从文件加载配置"""
+        """从文件加载配置，并在必要时迁移旧版本格式"""
         if self._config_path.exists():
             try:
                 with open(self._config_path, "r", encoding="utf-8") as f:
                     saved = json.load(f)
+
+                # 兼容性迁移：检查是否为旧格式
+                if "models" not in saved:
+                    saved = self._migrate_legacy_config(saved)
+
                 self._config = self._deep_merge(DEFAULT_CONFIG, saved)
             except (json.JSONDecodeError, OSError):
                 self._config = self._deep_copy(DEFAULT_CONFIG)
+
+    def _migrate_legacy_config(self, saved: dict[str, Any]) -> dict[str, Any]:
+        """将旧版本的 provider/openai/dashscope/ollama 结构平滑迁移到 models profiles 模式"""
+        migrated = self._deep_copy(saved)
+        models = self._deep_copy(DEFAULT_MODELS)
+
+        # 尝试使用已保存的 key/model 信息更新默认 profile
+        for m in models:
+            m_id = m["id"]
+            legacy_key = m_id.split("_")[0]  # dashscope, openai, ollama
+            if legacy_key in saved and isinstance(saved[legacy_key], dict):
+                old_cfg = saved[legacy_key]
+                if "base_url" in old_cfg and old_cfg["base_url"]:
+                    m["base_url"] = old_cfg["base_url"]
+                if "api_key" in old_cfg and old_cfg["api_key"]:
+                    m["api_key"] = old_cfg["api_key"]
+                if "text_model" in old_cfg and old_cfg["text_model"]:
+                    m["text_model"] = old_cfg["text_model"]
+                if "vl_model" in old_cfg and old_cfg["vl_model"]:
+                    m["vl_model"] = old_cfg["vl_model"]
+
+        provider = saved.get("provider", "dashscope")
+        lookup_provider = saved.get("word_lookup_provider", "same")
+
+        provider_map = {
+            "dashscope": "dashscope_default",
+            "openai": "openai_default",
+            "ollama": "ollama_default",
+        }
+
+        migrated["models"] = models
+        migrated["active_model_id"] = provider_map.get(provider, "dashscope_default")
+        if lookup_provider == "same":
+            migrated["active_word_lookup_model_id"] = "same"
+        else:
+            migrated["active_word_lookup_model_id"] = provider_map.get(lookup_provider, "dashscope_default")
+
+        return migrated
 
     def save(self) -> None:
         """保存配置到文件"""
@@ -157,7 +211,7 @@ class ConfigManager:
     def get(self, *keys: str, default: Any = None) -> Any:
         """
         链式获取配置值
-        例如: cfg.get("dashscope", "api_key")
+        例如: cfg.get("watcher", "poll_interval")
         """
         node: Any = self._config
         for key in keys:
@@ -170,7 +224,7 @@ class ConfigManager:
     def set(self, *keys_and_value: Any) -> None:
         """
         链式设置配置值（最后一个参数为值）
-        例如: cfg.set("dashscope", "api_key", "sk-xxx")
+        例如: cfg.set("active_model_id", "my_custom_id")
         """
         *keys, value = keys_and_value
         node = self._config
@@ -183,6 +237,45 @@ class ConfigManager:
     def get_all(self) -> dict[str, Any]:
         """返回完整配置的深拷贝"""
         return self._deep_copy(self._config)
+
+    def get_model_profiles(self) -> list[dict[str, Any]]:
+        """获取所有模型配置 profile"""
+        return self._deep_copy(self._config.get("models", DEFAULT_MODELS))
+
+    def get_model_profile(self, profile_id: str) -> dict[str, Any] | None:
+        """根据 ID 获取特定模型配置 profile"""
+        for m in self.get_model_profiles():
+            if m.get("id") == profile_id:
+                return m
+        return None
+
+    def get_active_model_profile(self) -> dict[str, Any] | None:
+        """获取当前激活的主模型配置 profile"""
+        active_id = self.get("active_model_id") or "dashscope_default"
+        profile = self.get_model_profile(active_id)
+        if profile is None:
+            # 回退机制
+            profiles = self.get_model_profiles()
+            if profiles:
+                return profiles[0]
+        return profile
+
+    def get_active_lookup_model_profile(self) -> dict[str, Any] | None:
+        """获取当前激活的查词模型配置 profile"""
+        lookup_id = self.get("active_word_lookup_model_id") or "same"
+        if lookup_id == "same":
+            return self.get_active_model_profile()
+        profile = self.get_model_profile(lookup_id)
+        if profile is None:
+            return self.get_active_model_profile()
+        return profile
+
+    def save_models(self, models: list[dict[str, Any]], active_id: str, lookup_active_id: str) -> None:
+        """保存模型 profiles 及选中的激活模型 ID"""
+        self.set("models", self._deep_copy(models))
+        self.set("active_model_id", active_id)
+        self.set("active_word_lookup_model_id", lookup_active_id)
+        self.save()
 
     def reset_to_defaults(self) -> None:
         """重置为默认配置"""

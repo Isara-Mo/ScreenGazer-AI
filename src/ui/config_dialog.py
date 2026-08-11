@@ -5,6 +5,7 @@ Config Dialog - tabbed settings for models, OCR, prompts, and hotkeys
 
 from __future__ import annotations
 
+import time
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QColor
 from PySide6.QtWidgets import (
@@ -12,7 +13,8 @@ from PySide6.QtWidgets import (
     QWidget, QLabel, QLineEdit, QTextEdit, QPushButton,
     QComboBox, QCheckBox, QSpinBox, QDoubleSpinBox,
     QGroupBox, QFormLayout, QFileDialog, QFrame,
-    QScrollArea, QMessageBox, QSlider,
+    QScrollArea, QMessageBox, QSlider, QListWidget,
+    QListWidgetItem,
 )
 
 from src.utils.config_manager import ConfigManager
@@ -83,12 +85,32 @@ QComboBox QAbstractItemView {
     color: #e2e8f0;
     selection-background-color: #4c1d95;
 }
+QListWidget {
+    background-color: #141428;
+    color: #e2e8f0;
+    border: 1px solid #1e1e3a;
+    border-radius: 6px;
+    padding: 4px;
+}
+QListWidget::item {
+    padding: 8px 10px;
+    border-radius: 4px;
+    margin-bottom: 2px;
+}
+QListWidget::item:selected {
+    background-color: #4c1d95;
+    color: #ffffff;
+    font-weight: bold;
+}
+QListWidget::item:hover:!selected {
+    background-color: #1e1e3a;
+}
 QPushButton {
     background-color: #1e1e3a;
     color: #94a3b8;
     border: 1px solid #374151;
     border-radius: 6px;
-    padding: 6px 16px;
+    padding: 6px 14px;
     font-size: 12px;
 }
 QPushButton:hover {
@@ -139,10 +161,16 @@ class ConfigDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("⚙ 翻译助手设置")
-        self.setMinimumSize(640, 560)
-        self.resize(680, 620)
+        self.setMinimumSize(720, 580)
+        self.resize(760, 640)
         self.setStyleSheet(DIALOG_STYLE)
         self._cfg = ConfigManager()
+
+        self._model_profiles: list[dict] = []
+        self._active_model_id: str = "dashscope_default"
+        self._active_lookup_model_id: str = "same"
+        self._current_profile_index: int = -1
+
         self._setup_ui()
         self._load_values()
 
@@ -160,7 +188,7 @@ class ConfigDialog(QDialog):
         self._tabs = QTabWidget()
         main_layout.addWidget(self._tabs)
 
-        self._tabs.addTab(self._build_model_tab(), "🤖 模型")
+        self._tabs.addTab(self._build_model_tab(), "🤖 模型配置")
         self._tabs.addTab(self._build_ocr_tab(), "🔍 OCR")
         self._tabs.addTab(self._build_mode_tab(), "⚡ 识别模式")
         self._tabs.addTab(self._build_prompt_tab(), "📝 提示词")
@@ -172,9 +200,6 @@ class ConfigDialog(QDialog):
         reset_btn = QPushButton("恢复默认")
         reset_btn.clicked.connect(self._reset_defaults)
 
-        test_btn = QPushButton("测试连接")
-        test_btn.clicked.connect(self._test_connection)
-
         save_btn = QPushButton("保存并应用")
         save_btn.setObjectName("saveBtn")
         save_btn.clicked.connect(self._save_and_close)
@@ -183,7 +208,6 @@ class ConfigDialog(QDialog):
         cancel_btn.clicked.connect(self.reject)
 
         btn_row.addWidget(reset_btn)
-        btn_row.addWidget(test_btn)
         btn_row.addStretch()
         btn_row.addWidget(cancel_btn)
         btn_row.addWidget(save_btn)
@@ -191,80 +215,311 @@ class ConfigDialog(QDialog):
 
     # ─── 模型配置 Tab ────────────────────────────────────────
     def _build_model_tab(self) -> QWidget:
-        w = QScrollArea()
-        w.setWidgetResizable(True)
-        inner = QWidget()
-        layout = QVBoxLayout(inner)
-        layout.setSpacing(12)
-        layout.setContentsMargins(12, 12, 12, 12)
+        container = QWidget()
+        main_layout = QHBoxLayout(container)
+        main_layout.setContentsMargins(8, 8, 8, 8)
+        main_layout.setSpacing(12)
 
-        # 提供商选择
-        provider_group = QGroupBox("主模型提供商")
-        pg_layout = QFormLayout(provider_group)
-        self._provider_combo = QComboBox()
-        self._provider_combo.addItems(["dashscope (阿里云通义)", "openai (OpenAI兼容)", "ollama (本地)"])
-        self._provider_combo.currentIndexChanged.connect(self._on_provider_changed)
-        pg_layout.addRow("提供商:", self._provider_combo)
-        layout.addWidget(provider_group)
+        # ── 左侧：模型配置列表与操作按钮 ──
+        left_box = QGroupBox("模型配置列表")
+        left_layout = QVBoxLayout(left_box)
+        left_layout.setSpacing(8)
 
-        # DashScope
-        self._ds_group = QGroupBox("DashScope (阿里云)")
-        ds_layout = QFormLayout(self._ds_group)
-        self._ds_base_url = QLineEdit()
-        self._ds_base_url.setPlaceholderText("https://dashscope.aliyuncs.com/api/v1 (或自定义 workspace URL)")
-        self._ds_api_key = QLineEdit()
-        self._ds_api_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._ds_api_key.setPlaceholderText("sk-xxxxxxxxxxxxxxxx")
-        self._ds_text_model = QLineEdit()
-        self._ds_text_model.setPlaceholderText("qwen-turbo")
-        self._ds_vl_model = QLineEdit()
-        self._ds_vl_model.setPlaceholderText("qwen3.6-flash")
-        ds_layout.addRow("Base URL:", self._ds_base_url)
-        ds_layout.addRow("API Key:", self._ds_api_key)
-        ds_layout.addRow("文本模型:", self._ds_text_model)
-        ds_layout.addRow("VL 模型:", self._ds_vl_model)
-        layout.addWidget(self._ds_group)
+        self._profile_list = QListWidget()
+        self._profile_list.setMinimumWidth(210)
+        self._profile_list.currentRowChanged.connect(self._on_profile_list_selection_changed)
+        left_layout.addWidget(self._profile_list)
 
-        # OpenAI 兼容
-        self._oa_group = QGroupBox("OpenAI 兼容 API")
-        oa_layout = QFormLayout(self._oa_group)
-        self._oa_base_url = QLineEdit()
-        self._oa_base_url.setPlaceholderText("https://api.openai.com/v1")
-        self._oa_api_key = QLineEdit()
-        self._oa_api_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._oa_text_model = QLineEdit()
-        self._oa_text_model.setPlaceholderText("gpt-4o-mini")
-        self._oa_vl_model = QLineEdit()
-        self._oa_vl_model.setPlaceholderText("gpt-4o")
-        oa_layout.addRow("Base URL:", self._oa_base_url)
-        oa_layout.addRow("API Key:", self._oa_api_key)
-        oa_layout.addRow("文本模型:", self._oa_text_model)
-        oa_layout.addRow("VL 模型:", self._oa_vl_model)
-        layout.addWidget(self._oa_group)
+        # 操作按钮 Row 1: 新建 / 复制 / 删除
+        btn_row1 = QHBoxLayout()
+        btn_row1.setSpacing(4)
+        add_btn = QPushButton("➕ 新建")
+        add_btn.setToolTip("添加一个新的 AI 模型配置")
+        add_btn.clicked.connect(self._add_profile)
 
-        # Ollama
-        self._ollama_group = QGroupBox("Ollama 本地模型")
-        ol_layout = QFormLayout(self._ollama_group)
-        self._ol_base_url = QLineEdit()
-        self._ol_base_url.setPlaceholderText("http://localhost:11434")
-        self._ol_text_model = QLineEdit()
-        self._ol_text_model.setPlaceholderText("llama3.2")
-        self._ol_vl_model = QLineEdit()
-        self._ol_vl_model.setPlaceholderText("llava")
-        ol_layout.addRow("Base URL:", self._ol_base_url)
-        ol_layout.addRow("文本模型:", self._ol_text_model)
-        ol_layout.addRow("VL 模型:", self._ol_vl_model)
-        layout.addWidget(self._ollama_group)
+        copy_btn = QPushButton("📋 复制")
+        copy_btn.setToolTip("复制当前选中的模型配置")
+        copy_btn.clicked.connect(self._copy_profile)
 
-        layout.addStretch()
-        w.setWidget(inner)
-        return w
+        self._del_profile_btn = QPushButton("🗑 删除")
+        self._del_profile_btn.setToolTip("删除当前选中的模型配置")
+        self._del_profile_btn.clicked.connect(self._del_profile)
 
-    def _on_provider_changed(self, idx: int) -> None:
-        providers = ["dashscope", "openai", "ollama"]
-        groups = [self._ds_group, self._oa_group, self._ollama_group]
-        for i, g in enumerate(groups):
-            g.setEnabled(i == idx)
+        btn_row1.addWidget(add_btn)
+        btn_row1.addWidget(copy_btn)
+        btn_row1.addWidget(self._del_profile_btn)
+        left_layout.addLayout(btn_row1)
+
+        # 操作按钮 Row 2: 设为主模型 / 设为查词模型
+        btn_row2 = QVBoxLayout()
+        btn_row2.setSpacing(4)
+        self._set_main_btn = QPushButton("⭐ 设为主翻译模型")
+        self._set_main_btn.clicked.connect(self._set_as_main_model)
+
+        self._set_lookup_btn = QPushButton("🔍 设为查词模型")
+        self._set_lookup_btn.clicked.connect(self._set_as_lookup_model)
+
+        btn_row2.addWidget(self._set_main_btn)
+        btn_row2.addWidget(self._set_lookup_btn)
+        left_layout.addLayout(btn_row2)
+
+        main_layout.addWidget(left_box, stretch=4)
+
+        # ── 右侧：模型参数编辑区 ──
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_inner = QWidget()
+        right_layout = QVBoxLayout(right_inner)
+        right_layout.setContentsMargins(8, 8, 8, 8)
+        right_layout.setSpacing(10)
+
+        edit_group = QGroupBox("模型参数编辑")
+        form_layout = QFormLayout(edit_group)
+        form_layout.setSpacing(8)
+
+        self._profile_name_edit = QLineEdit()
+        self._profile_name_edit.setPlaceholderText("例如: 通义千问 3.7 / DeepSeek-V3")
+        self._profile_name_edit.textEdited.connect(self._on_form_edited)
+
+        self._profile_type_combo = QComboBox()
+        self._profile_type_combo.addItems([
+            "dashscope (阿里云 DashScope)",
+            "openai (OpenAI 兼容 API)",
+            "ollama (Ollama 本地)",
+        ])
+        self._profile_type_combo.currentIndexChanged.connect(self._on_form_edited)
+
+        self._profile_base_url_edit = QLineEdit()
+        self._profile_base_url_edit.setPlaceholderText("https://dashscope.aliyuncs.com/api/v1")
+        self._profile_base_url_edit.textEdited.connect(self._on_form_edited)
+
+        self._profile_api_key_edit = QLineEdit()
+        self._profile_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._profile_api_key_edit.setPlaceholderText("sk-xxxxxxxxxxxxxxxx")
+        self._profile_api_key_edit.textEdited.connect(self._on_form_edited)
+
+        self._profile_text_model_edit = QLineEdit()
+        self._profile_text_model_edit.setPlaceholderText("例如: qwen3.7-flash / gpt-4o-mini")
+        self._profile_text_model_edit.textEdited.connect(self._on_form_edited)
+
+        self._profile_vl_model_edit = QLineEdit()
+        self._profile_vl_model_edit.setPlaceholderText("例如: qwen-vl-max / gpt-4o")
+        self._profile_vl_model_edit.textEdited.connect(self._on_form_edited)
+
+        form_layout.addRow("模型配置名称:", self._profile_name_edit)
+        form_layout.addRow("接口类型:", self._profile_type_combo)
+        form_layout.addRow("Base URL:", self._profile_base_url_edit)
+        form_layout.addRow("API Key:", self._profile_api_key_edit)
+        form_layout.addRow("文本模型名称:", self._profile_text_model_edit)
+        form_layout.addRow("VL 视觉模型名称:", self._profile_vl_model_edit)
+
+        right_layout.addWidget(edit_group)
+
+        self._test_profile_btn = QPushButton("🧪 测试当前模型连接")
+        self._test_profile_btn.clicked.connect(self._test_connection)
+        right_layout.addWidget(self._test_profile_btn)
+
+        right_layout.addStretch()
+        right_scroll.setWidget(right_inner)
+
+        main_layout.addWidget(right_scroll, stretch=6)
+        return container
+
+    def _on_profile_list_selection_changed(self, row: int) -> None:
+        if row < 0 or row >= len(self._model_profiles):
+            return
+
+        self._current_profile_index = row
+        p = self._model_profiles[row]
+
+        # 填充右侧表单
+        self._profile_name_edit.blockSignals(True)
+        self._profile_type_combo.blockSignals(True)
+        self._profile_base_url_edit.blockSignals(True)
+        self._profile_api_key_edit.blockSignals(True)
+        self._profile_text_model_edit.blockSignals(True)
+        self._profile_vl_model_edit.blockSignals(True)
+
+        self._profile_name_edit.setText(p.get("name", ""))
+        api_type_map = {"dashscope": 0, "openai": 1, "ollama": 2}
+        self._profile_type_combo.setCurrentIndex(api_type_map.get(p.get("api_type", "openai"), 1))
+        self._profile_base_url_edit.setText(p.get("base_url", ""))
+        self._profile_api_key_edit.setText(p.get("api_key", ""))
+        self._profile_text_model_edit.setText(p.get("text_model", ""))
+        self._profile_vl_model_edit.setText(p.get("vl_model", ""))
+
+        self._profile_name_edit.blockSignals(False)
+        self._profile_type_combo.blockSignals(False)
+        self._profile_base_url_edit.blockSignals(False)
+        self._profile_api_key_edit.blockSignals(False)
+        self._profile_text_model_edit.blockSignals(False)
+        self._profile_vl_model_edit.blockSignals(False)
+
+        # 按钮状态控制
+        self._del_profile_btn.setEnabled(len(self._model_profiles) > 1)
+        p_id = p.get("id", "")
+        self._set_main_btn.setEnabled(p_id != self._active_model_id)
+        self._set_lookup_btn.setEnabled(p_id != self._active_lookup_model_id)
+
+    def _on_form_edited(self) -> None:
+        if self._current_profile_index < 0 or self._current_profile_index >= len(self._model_profiles):
+            return
+        p = self._model_profiles[self._current_profile_index]
+        p["name"] = self._profile_name_edit.text().strip()
+        api_types = ["dashscope", "openai", "ollama"]
+        p["api_type"] = api_types[self._profile_type_combo.currentIndex()]
+        p["base_url"] = self._profile_base_url_edit.text().strip()
+        p["api_key"] = self._profile_api_key_edit.text().strip()
+        p["text_model"] = self._profile_text_model_edit.text().strip()
+        p["vl_model"] = self._profile_vl_model_edit.text().strip()
+
+        # 实时更新 ListWidget 中的标题
+        item = self._profile_list.item(self._current_profile_index)
+        if item:
+            badges = []
+            if p["id"] == self._active_model_id:
+                badges.append("⭐主模型")
+            if p["id"] == self._active_lookup_model_id:
+                badges.append("🔍查词")
+            display_text = p["name"] or "未命名模型"
+            if badges:
+                display_text += f" [{', '.join(badges)}]"
+            item.setText(display_text)
+
+        self._refresh_lookup_combo()
+
+    def _refresh_profile_list(self, select_id: str | None = None) -> None:
+        self._profile_list.blockSignals(True)
+        self._profile_list.clear()
+        target_row = 0
+        for idx, p in enumerate(self._model_profiles):
+            p_id = p.get("id", "")
+            badges = []
+            if p_id == self._active_model_id:
+                badges.append("⭐主模型")
+            if p_id == self._active_lookup_model_id:
+                badges.append("🔍查词")
+            display_text = p.get("name", "未命名模型")
+            if badges:
+                display_text += f" [{', '.join(badges)}]"
+
+            item = QListWidgetItem(display_text)
+            item.setData(Qt.ItemDataRole.UserRole, p_id)
+            self._profile_list.addItem(item)
+            if select_id and p_id == select_id:
+                target_row = idx
+
+        self._profile_list.blockSignals(False)
+        if self._model_profiles:
+            target_row = min(target_row, len(self._model_profiles) - 1)
+            self._profile_list.setCurrentRow(target_row)
+            self._on_profile_list_selection_changed(target_row)
+
+        self._refresh_lookup_combo()
+
+    def _refresh_profile_list_badges(self) -> None:
+        """刷新列表各项的徽章标记（⭐主模型 / 🔍查词）而无需重新载入全部控件"""
+        for idx, p in enumerate(self._model_profiles):
+            p_id = p.get("id", "")
+            badges = []
+            if p_id == self._active_model_id:
+                badges.append("⭐主模型")
+            if p_id == self._active_lookup_model_id:
+                badges.append("🔍查词")
+            display_text = p.get("name", "未命名模型")
+            if badges:
+                display_text += f" [{', '.join(badges)}]"
+
+            item = self._profile_list.item(idx)
+            if item:
+                item.setText(display_text)
+
+        if 0 <= self._current_profile_index < len(self._model_profiles):
+            current_id = self._model_profiles[self._current_profile_index].get("id", "")
+            self._set_main_btn.setEnabled(current_id != self._active_model_id)
+            self._set_lookup_btn.setEnabled(current_id != self._active_lookup_model_id)
+
+    def _refresh_lookup_combo(self) -> None:
+        if not hasattr(self, "_lookup_provider_combo"):
+            return
+        self._lookup_provider_combo.blockSignals(True)
+        self._lookup_provider_combo.clear()
+        self._lookup_provider_combo.addItem("与主翻译模型相同", "same")
+        for p in self._model_profiles:
+            self._lookup_provider_combo.addItem(f"{p.get('name', '未命名')} ({p.get('api_type', '')})", p.get("id"))
+
+        idx = self._lookup_provider_combo.findData(self._active_lookup_model_id)
+        if idx >= 0:
+            self._lookup_provider_combo.setCurrentIndex(idx)
+        else:
+            self._lookup_provider_combo.setCurrentIndex(0)
+        self._lookup_provider_combo.blockSignals(False)
+
+    def _on_lookup_combo_changed(self) -> None:
+        """识别模式 Tab 中下拉框切换查词模型时的实时回调"""
+        lookup_data = self._lookup_provider_combo.currentData()
+        if lookup_data is not None:
+            self._active_lookup_model_id = str(lookup_data)
+            self._refresh_profile_list_badges()
+
+    def _add_profile(self) -> None:
+        new_id = f"profile_{int(time.time() * 1000)}"
+        new_profile = {
+            "id": new_id,
+            "name": f"自定义模型 {len(self._model_profiles) + 1}",
+            "api_type": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "",
+            "text_model": "gpt-4o-mini",
+            "vl_model": "",
+        }
+        self._model_profiles.append(new_profile)
+        self._refresh_profile_list(select_id=new_id)
+
+    def _copy_profile(self) -> None:
+        if self._current_profile_index < 0 or self._current_profile_index >= len(self._model_profiles):
+            return
+        orig = self._model_profiles[self._current_profile_index]
+        copied = dict(orig)
+        copied["id"] = f"profile_{int(time.time() * 1000)}"
+        copied["name"] = f"{orig.get('name', '模型')} (副本)"
+        self._model_profiles.insert(self._current_profile_index + 1, copied)
+        self._refresh_profile_list(select_id=copied["id"])
+
+    def _del_profile(self) -> None:
+        if len(self._model_profiles) <= 1:
+            QMessageBox.warning(self, "提示", "至少保留一个模型配置！")
+            return
+        if self._current_profile_index < 0 or self._current_profile_index >= len(self._model_profiles):
+            return
+
+        p = self._model_profiles[self._current_profile_index]
+        p_id = p.get("id", "")
+        reply = QMessageBox.question(
+            self, "确认删除", f"确定要删除模型配置【{p.get('name', '')}】吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._model_profiles.pop(self._current_profile_index)
+            if self._active_model_id == p_id:
+                self._active_model_id = self._model_profiles[0]["id"]
+            if self._active_lookup_model_id == p_id:
+                self._active_lookup_model_id = "same"
+            self._refresh_profile_list()
+
+    def _set_as_main_model(self) -> None:
+        if self._current_profile_index >= 0 and self._current_profile_index < len(self._model_profiles):
+            p_id = self._model_profiles[self._current_profile_index]["id"]
+            self._active_model_id = p_id
+            self._refresh_profile_list_badges()
+            self._refresh_lookup_combo()
+
+    def _set_as_lookup_model(self) -> None:
+        if self._current_profile_index >= 0 and self._current_profile_index < len(self._model_profiles):
+            p_id = self._model_profiles[self._current_profile_index]["id"]
+            self._active_lookup_model_id = p_id
+            self._refresh_profile_list_badges()
+            self._refresh_lookup_combo()
 
     # ─── OCR Tab ─────────────────────────────────────────────
     def _build_ocr_tab(self) -> QWidget:
@@ -386,13 +641,14 @@ class ConfigDialog(QDialog):
         lk_layout = QFormLayout(lookup_group)
 
         self._lookup_provider_combo = QComboBox()
-        self._lookup_provider_combo.addItems([
-            "与翻译模型相同",
-            "dashscope (阿里云通义)",
-            "openai (OpenAI兼容)",
-            "ollama (本地)",
-        ])
+        self._lookup_provider_combo.currentIndexChanged.connect(self._on_lookup_combo_changed)
         lk_layout.addRow("查词模型:", self._lookup_provider_combo)
+
+        lookup_note = QLabel("提示: 与【🤖 模型配置】中的『🔍 设为查词模型』完全实时同步。选择『与主翻译模型相同』则自动随主模型切换。")
+        lookup_note.setStyleSheet("color: #6b7280; font-size: 11px;")
+        lookup_note.setWordWrap(True)
+        lk_layout.addRow(lookup_note)
+
         layout.addWidget(lookup_group)
         layout.addStretch()
         return w
@@ -514,27 +770,9 @@ class ConfigDialog(QDialog):
     # ─── 读写配置 ────────────────────────────────────────────
     def _load_values(self) -> None:
         c = self._cfg
-
-        # 提供商
-        provider_map = {"dashscope": 0, "openai": 1, "ollama": 2}
-        self._provider_combo.setCurrentIndex(provider_map.get(c.get("provider"), 0))
-
-        # DashScope
-        self._ds_base_url.setText(c.get("dashscope", "base_url") or "")
-        self._ds_api_key.setText(c.get("dashscope", "api_key") or "")
-        self._ds_text_model.setText(c.get("dashscope", "text_model") or "")
-        self._ds_vl_model.setText(c.get("dashscope", "vl_model") or "")
-
-        # OpenAI
-        self._oa_base_url.setText(c.get("openai", "base_url") or "")
-        self._oa_api_key.setText(c.get("openai", "api_key") or "")
-        self._oa_text_model.setText(c.get("openai", "text_model") or "")
-        self._oa_vl_model.setText(c.get("openai", "vl_model") or "")
-
-        # Ollama
-        self._ol_base_url.setText(c.get("ollama", "base_url") or "")
-        self._ol_text_model.setText(c.get("ollama", "text_model") or "")
-        self._ol_vl_model.setText(c.get("ollama", "vl_model") or "")
+        self._model_profiles = c.get_model_profiles()
+        self._active_model_id = c.get("active_model_id") or "dashscope_default"
+        self._active_lookup_model_id = c.get("active_word_lookup_model_id") or "same"
 
         # OCR
         engine_map = {"tesseract": 0, "paddleocr": 1}
@@ -546,11 +784,6 @@ class ConfigDialog(QDialog):
         # 模式
         mode_map = {"ocr": 0, "vl": 1}
         self._mode_combo.setCurrentIndex(mode_map.get(c.get("recognition_mode"), 0))
-
-        lookup_map = {"same": 0, "dashscope": 1, "openai": 2, "ollama": 3}
-        self._lookup_provider_combo.setCurrentIndex(
-            lookup_map.get(c.get("word_lookup_provider"), 0)
-        )
 
         # Prompts
         self._prompt_text.setPlainText(c.get("prompts", "translate_text") or "")
@@ -569,29 +802,18 @@ class ConfigDialog(QDialog):
         self._font_size_en.setValue(c.get("ui", "font_size_en") or 13)
         self._font_size_zh.setValue(c.get("ui", "font_size_zh") or 14)
 
-        # 触发初始 UI 状态更新
-        self._on_provider_changed(self._provider_combo.currentIndex())
+        # 刷新列表与状态
+        self._refresh_profile_list(select_id=self._active_model_id)
         self._on_ocr_engine_changed(self._ocr_engine_combo.currentIndex())
 
     def _save_values(self) -> None:
+        self._on_form_edited()
         c = self._cfg
 
-        providers = ["dashscope", "openai", "ollama"]
-        c.set("provider", providers[self._provider_combo.currentIndex()])
+        lookup_data = self._lookup_provider_combo.currentData() or "same"
+        self._active_lookup_model_id = str(lookup_data)
 
-        c.set("dashscope", "base_url", self._ds_base_url.text().strip())
-        c.set("dashscope", "api_key", self._ds_api_key.text().strip())
-        c.set("dashscope", "text_model", self._ds_text_model.text().strip())
-        c.set("dashscope", "vl_model", self._ds_vl_model.text().strip())
-
-        c.set("openai", "base_url", self._oa_base_url.text().strip())
-        c.set("openai", "api_key", self._oa_api_key.text().strip())
-        c.set("openai", "text_model", self._oa_text_model.text().strip())
-        c.set("openai", "vl_model", self._oa_vl_model.text().strip())
-
-        c.set("ollama", "base_url", self._ol_base_url.text().strip())
-        c.set("ollama", "text_model", self._ol_text_model.text().strip())
-        c.set("ollama", "vl_model", self._ol_vl_model.text().strip())
+        c.save_models(self._model_profiles, self._active_model_id, self._active_lookup_model_id)
 
         engines = ["tesseract", "paddleocr"]
         c.set("ocr", "engine", engines[self._ocr_engine_combo.currentIndex()])
@@ -601,9 +823,6 @@ class ConfigDialog(QDialog):
 
         modes = ["ocr", "vl"]
         c.set("recognition_mode", modes[self._mode_combo.currentIndex()])
-
-        lookup_providers = ["same", "dashscope", "openai", "ollama"]
-        c.set("word_lookup_provider", lookup_providers[self._lookup_provider_combo.currentIndex()])
 
         c.set("prompts", "translate_text", self._prompt_text.toPlainText())
         c.set("prompts", "translate_vl", self._prompt_vl.toPlainText())
@@ -622,27 +841,25 @@ class ConfigDialog(QDialog):
         c.save()
 
     def _save_and_close(self) -> None:
-        # 验证 VL 模式配置
+        self._on_form_edited()
         modes = ["ocr", "vl"]
         selected_mode = modes[self._mode_combo.currentIndex()]
-        
-        providers = ["dashscope", "openai", "ollama"]
-        selected_provider = providers[self._provider_combo.currentIndex()]
-        
-        vl_model = ""
-        if selected_provider == "dashscope":
-            vl_model = self._ds_vl_model.text().strip()
-        elif selected_provider == "openai":
-            vl_model = self._oa_vl_model.text().strip()
-        elif selected_provider == "ollama":
-            vl_model = self._ol_vl_model.text().strip()
-            
-        if selected_mode == "vl" and not vl_model:
+
+        active_profile = None
+        for p in self._model_profiles:
+            if p.get("id") == self._active_model_id:
+                active_profile = p
+                break
+
+        if active_profile is None and self._model_profiles:
+            active_profile = self._model_profiles[0]
+
+        if selected_mode == "vl" and active_profile and not active_profile.get("vl_model", "").strip():
             QMessageBox.warning(
                 self,
                 "无法保存配置",
-                f"当前识别模式选择为【VL大模型直接识别】，但【{selected_provider.upper()}】的 VL 模型为空，无法启用此模式。\n\n"
-                "请先在对应标签页填写 【VL 模型】 名称，或将识别模式更改为【OCR+文本LLM】。"
+                f"当前识别模式选择为【VL大模型直接识别】，但主模型【{active_profile.get('name')}】的 VL 视觉模型名称为空，无法启用此模式。\n\n"
+                "请先在模型参数编辑区填写 【VL 视觉模型名称】，或将识别模式更改为【OCR+文本LLM】。"
             )
             return
 
@@ -660,32 +877,16 @@ class ConfigDialog(QDialog):
             self._load_values()
 
     def _test_connection(self) -> None:
-        """测试当前配置的模型连接"""
-        from PySide6.QtWidgets import QProgressDialog
-        provider = ["dashscope", "openai", "ollama"][self._provider_combo.currentIndex()]
+        """测试当前编辑框中的模型配置连接"""
+        self._on_form_edited()
+        if self._current_profile_index < 0 or self._current_profile_index >= len(self._model_profiles):
+            return
 
-        cfg_map = {
-            "dashscope": {
-                "api_key": self._ds_api_key.text().strip(),
-                "base_url": self._ds_base_url.text().strip(),
-                "text_model": self._ds_text_model.text().strip(),
-                "vl_model": self._ds_vl_model.text().strip(),
-            },
-            "openai": {
-                "base_url": self._oa_base_url.text().strip(),
-                "api_key": self._oa_api_key.text().strip(),
-                "text_model": self._oa_text_model.text().strip(),
-            },
-            "ollama": {
-                "base_url": self._ol_base_url.text().strip(),
-                "text_model": self._ol_text_model.text().strip(),
-            },
-        }
-
+        profile = self._model_profiles[self._current_profile_index]
         try:
             from src.core.llm_client import create_client
-            client = create_client(provider, cfg_map[provider])
+            client = create_client(profile)
             response = client.chat([{"role": "user", "content": "Say 'OK' in one word."}])
-            QMessageBox.information(self, "连接成功", f"✅ 模型响应正常\n响应: {response[:100]}")
+            QMessageBox.information(self, "连接成功", f"✅ 模型 [{profile.get('name')}] 响应正常\n响应: {response[:100]}")
         except Exception as e:
-            QMessageBox.critical(self, "连接失败", f"❌ 连接失败\n\n{e}")
+            QMessageBox.critical(self, "连接失败", f"❌ 模型 [{profile.get('name')}] 连接失败\n\n{e}")
