@@ -100,7 +100,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
 
     "ui": {
-        "panel_geometry": None,     # [x, y, w, h]
+        "panel_geometry": None,     # [x, y, w, h] (合并面板位置)
+        "panel_geometry_en": None,  # [x, y, w, h] (英文面板位置)
+        "panel_geometry_zh": None,  # [x, y, w, h] (中文面板位置)
+        "split_mode": True,         # 是否开启拆分独立模式
+        "show_en_panel": True,      # 是否显示英文面板
+        "show_zh_panel": True,      # 是否显示中文面板
         "always_on_top": True,
         "opacity": 0.95,
         "font_size_en": 13,

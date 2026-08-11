@@ -14,6 +14,7 @@ Visual Novel English learning and translation tool — Real-time screen capture 
 - 🔍 **OCR Engine**: Tesseract (fast) or PaddleOCR (highly accurate, locked to stable v2.x for best performance).
 - 🤖 **AI Translation**: Corrects OCR errors and translates to Chinese, with JSON structured output.
 - 🖼 **VL Mode**: Sends screenshots directly to Vision-Language models (e.g., `qwen-vl-plus`) for direct extraction and translation (perfect for highly stylized fonts).
+- 🧱 **Independent Dual Floating Panels & Subtitle Bar**: Split English original text and Chinese translation into independent floating windows. Drag the Chinese translation box to the bottom of your game screen and resize it into a sleek long subtitle bar! Includes collapsible OCR raw text toggle (`📄 OCR Raw`).
 - 📖 **Interactive Word Lookup**: Click any English word in the result panel to see its contextual meaning. Drag to select phrases.
 - ⌨ **Hotkeys**: Press `Ctrl+Shift+T` to instantly translate (customizable).
 - 👁 **Auto Monitor**: Polls the screen every 0.5s and auto-translates when text stabilizes.
@@ -51,6 +52,7 @@ uv run main.py
 - 🔍 **OCR 识别**: 支持 Tesseract（本地快速）或 PaddleOCR（极其精准，已锁定至无 Bug 的稳定 2.x 版本）。
 - 🤖 **AI 翻译**: 自动矫正 OCR 错误并翻译为中文，要求模型使用 JSON 格式结构化返回，避免格式错乱。
 - 🖼 **VL 直接识别**: 截图直接发给视觉大模型（如 `qwen-vl-plus`）识别+翻译（完美应对艺术字和特殊排版）。
+- 🧱 **独立拆分双浮窗 & 长条字幕框**: 支持将英文矫正原文与中文翻译拆分为 2 个独立浮窗。中文翻译框可单独拖拽至游戏屏幕最底部拉成长条字幕框（Subtitles Bar），界面缩放与摆放更自由。内置折叠式 `📄 OCR原文` 展收按钮。
 - 📖 **交互式查词**: 在结果面板中**单击**任何英文单词，即可在弹窗中查看其在当前语境中的精确含义。支持拖选词组。
 - ⌨ **快捷键触发**: 按 `Ctrl+Shift+T` 立即进行翻译（可自由自定义）。
 - 👁 **自动监视**: 0.5s 轮询检测画面变化，当游戏对话文本输出完毕稳定后，自动触发翻译。

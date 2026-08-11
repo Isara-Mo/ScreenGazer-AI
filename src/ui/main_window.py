@@ -268,11 +268,21 @@ class MainWindow(QMainWindow):
         translate_now_btn = QPushButton("🔄 立即翻译 (手动)")
         translate_now_btn.clicked.connect(self._manual_translate)
 
-        show_panel_btn = QPushButton("📋 显示结果面板")
+        show_panel_btn = QPushButton("📋 显示全部浮窗")
         show_panel_btn.clicked.connect(self._show_result_panel)
 
         btn_row2.addWidget(translate_now_btn)
         btn_row2.addWidget(show_panel_btn)
+
+        btn_row3 = QHBoxLayout()
+        show_zh_btn = QPushButton("🇨🇳 中文翻译长条框")
+        show_zh_btn.clicked.connect(lambda: self._result_panel and self._result_panel.show_chinese_only())
+
+        show_en_btn = QPushButton("🔤 英文原文框")
+        show_en_btn.clicked.connect(lambda: self._result_panel and self._result_panel.show_english_only())
+
+        btn_row3.addWidget(show_zh_btn)
+        btn_row3.addWidget(show_en_btn)
 
         hotkey_hint = QLabel(f"快捷键: {self._cfg.get('hotkey', default='ctrl+shift+t').upper()} 立即翻译")
         hotkey_hint.setStyleSheet("color: #4b5563; font-size: 10px; text-align: center;")
@@ -281,6 +291,7 @@ class MainWindow(QMainWindow):
 
         ctrl_layout.addLayout(btn_row1)
         ctrl_layout.addLayout(btn_row2)
+        ctrl_layout.addLayout(btn_row3)
         ctrl_layout.addWidget(hotkey_hint)
         layout.addWidget(ctrl_group)
 
@@ -306,8 +317,14 @@ class MainWindow(QMainWindow):
         tray_menu = QMenu()
         show_action = QAction("显示主窗口", self)
         show_action.triggered.connect(self.show)
-        show_panel_action = QAction("显示翻译面板", self)
+        show_panel_action = QAction("显示全部翻译面板", self)
         show_panel_action.triggered.connect(self._show_result_panel)
+        show_zh_action = QAction("🇨🇳 显示中文字幕长条框", self)
+        show_zh_action.triggered.connect(lambda: self._result_panel and self._result_panel.show_chinese_only())
+        show_en_action = QAction("🔤 显示英文原文框", self)
+        show_en_action.triggered.connect(lambda: self._result_panel and self._result_panel.show_english_only())
+        toggle_mode_action = QAction("🧱/📦 切换拆分/合并模式", self)
+        toggle_mode_action.triggered.connect(lambda: self._result_panel and self._result_panel.toggle_split_mode())
         translate_action = QAction("立即翻译", self)
         translate_action.triggered.connect(self._manual_translate)
         quit_action = QAction("退出", self)
@@ -315,6 +332,10 @@ class MainWindow(QMainWindow):
 
         tray_menu.addAction(show_action)
         tray_menu.addAction(show_panel_action)
+        tray_menu.addAction(show_zh_action)
+        tray_menu.addAction(show_en_action)
+        tray_menu.addAction(toggle_mode_action)
+        tray_menu.addSeparator()
         tray_menu.addAction(translate_action)
         tray_menu.addSeparator()
         tray_menu.addAction(quit_action)
