@@ -123,6 +123,18 @@ QComboBox QAbstractItemView {
 """
 
 
+class AutoRefreshComboBox(QComboBox):
+    """展开列表时自动触发刷新的 ComboBox"""
+    def __init__(self, refresh_callback=None, parent=None):
+        super().__init__(parent)
+        self._refresh_cb = refresh_callback
+
+    def showPopup(self):
+        if self._refresh_cb:
+            self._refresh_cb()
+        super().showPopup()
+
+
 class MainWindow(QMainWindow):
     """
     主控制窗口
@@ -220,15 +232,11 @@ class MainWindow(QMainWindow):
         window_row = QHBoxLayout()
         window_lbl = QLabel("目标窗口:")
         window_lbl.setFixedWidth(70)
-        self._window_combo = QComboBox()
+        self._window_combo = AutoRefreshComboBox(refresh_callback=self._refresh_windows)
         self._window_combo.setPlaceholderText("（可选）先选窗口再框选")
-        refresh_btn = QPushButton("↻")
-        refresh_btn.setFixedSize(30, 30)
-        refresh_btn.setToolTip("刷新窗口列表")
-        refresh_btn.clicked.connect(self._refresh_windows)
+
         window_row.addWidget(window_lbl)
         window_row.addWidget(self._window_combo)
-        window_row.addWidget(refresh_btn)
 
         cg_layout.addWidget(self._region_label)
         cg_layout.addLayout(window_row)
@@ -508,10 +516,22 @@ class MainWindow(QMainWindow):
 
     # ─── 窗口列表 ────────────────────────────────────────────
     def _refresh_windows(self) -> None:
+        current_text = self._window_combo.currentText()
+        self._window_combo.blockSignals(True)
         self._window_combo.clear()
         self._window_combo.addItem("（可选）先选窗口再框选")
-        for win in list_windows():
+        wins = list_windows()
+        for win in wins:
             self._window_combo.addItem(win.title)
+
+        # 恢复先前选中的项
+        idx = self._window_combo.findText(current_text)
+        if idx >= 0:
+            self._window_combo.setCurrentIndex(idx)
+        else:
+            self._window_combo.setCurrentIndex(0)
+        self._window_combo.blockSignals(False)
+        self._status_bar.showMessage(f"已自动扫描刷新窗口列表 (共 {len(wins)} 个活跃窗口)", 2500)
 
     # ─── 监视控制 ────────────────────────────────────────────
     def _start_watching(self) -> None:
