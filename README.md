@@ -17,7 +17,7 @@ Visual Novel English learning and translation tool — Real-time screen capture 
 - 📖 **Interactive Word Lookup**: Click any English word in the result panel to see its contextual meaning. Drag to select phrases.
 - ⌨ **Hotkeys**: Press `Ctrl+Shift+T` to instantly translate (customizable).
 - 👁 **Auto Monitor**: Polls the screen every 0.5s and auto-translates when text stabilizes.
-- ⚡ **Performance Optimization**: Automatically disables deep-thinking mode for compatible AI APIs to ensure rapid translation responses (3-5s).
+- 🧠 **Flexible Thinking Mode Control**: Supports 3-state Thinking mode selection (Default / Force Off / Force On) per model profile for optimal speed or deep reasoning.
 
 ### Quick Start
 
@@ -54,7 +54,7 @@ uv run main.py
 - 📖 **交互式查词**: 在结果面板中**单击**任何英文单词，即可在弹窗中查看其在当前语境中的精确含义。支持拖选词组。
 - ⌨ **快捷键触发**: 按 `Ctrl+Shift+T` 立即进行翻译（可自由自定义）。
 - 👁 **自动监视**: 0.5s 轮询检测画面变化，当游戏对话文本输出完毕稳定后，自动触发翻译。
-- ⚡ **极致速度优化**: 自动针对阿里云百炼等大模型关闭“深度思考”模式，跳过无意义的推理过程，实现极速响应（并在控制台打印各阶段耗时）。
+- 🧠 **灵活的三态 Thinking 控制**: 支持为每个模型独立设置 3 态深度思考模式（默认 / 强制关闭 / 强制开启），兼顾极速响应与复杂推理需求。
 
 ### 快速开始
 

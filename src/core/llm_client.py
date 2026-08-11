@@ -58,6 +58,15 @@ def _save_image_to_temp(image: Image.Image) -> str:
     return path
 
 
+def _normalize_thinking_mode(mode: str | bool | None) -> str:
+    """规范化思考模式参数: 'default' | 'off' | 'on'"""
+    if mode is True or mode == "on":
+        return "on"
+    if mode is False or mode == "off":
+        return "off"
+    return "default"
+
+
 # ─────────────────────────────────────────────────────────────
 # OpenAI 兼容客户端（支持 OpenAI、Ollama、其他兼容 API）
 # ─────────────────────────────────────────────────────────────
@@ -73,6 +82,7 @@ class OpenAIClient(LLMClient):
         api_key: str,
         model: str,
         vl_model: Optional[str] = None,
+        thinking_mode: str | bool = "default",
         timeout: int = 60,
     ) -> None:
         from openai import OpenAI
@@ -83,6 +93,7 @@ class OpenAIClient(LLMClient):
         )
         self._model = model
         self._vl_model = (vl_model or "").strip()
+        self._thinking_mode = _normalize_thinking_mode(thinking_mode)
         self._name = "OpenAI-Compatible"
 
     @property
@@ -95,7 +106,9 @@ class OpenAIClient(LLMClient):
             "messages": messages,
             "temperature": 0.3,
         }
-        if "aliyuncs.com" in str(self._client.base_url):
+        if self._thinking_mode == "on":
+            kwargs["extra_body"] = {"enable_thinking": True}
+        elif self._thinking_mode == "off":
             kwargs["extra_body"] = {"enable_thinking": False}
 
         response = self._client.chat.completions.create(**kwargs)
@@ -120,7 +133,9 @@ class OpenAIClient(LLMClient):
             "messages": messages,
             "temperature": 0.3,
         }
-        if "aliyuncs.com" in str(self._client.base_url):
+        if self._thinking_mode == "on":
+            kwargs["extra_body"] = {"enable_thinking": True}
+        elif self._thinking_mode == "off":
             kwargs["extra_body"] = {"enable_thinking": False}
 
         response = self._client.chat.completions.create(**kwargs)
@@ -154,6 +169,7 @@ class DashScopeClient(LLMClient):
         text_model: str = "qwen-turbo",
         vl_model: str = "qwen-vl-plus",
         base_url: Optional[str] = None,
+        thinking_mode: str | bool = "default",
         timeout: int = 60,
     ) -> None:
         import dashscope
@@ -163,6 +179,7 @@ class DashScopeClient(LLMClient):
             self._ds.base_http_api_url = base_url.strip()
         self._text_model = text_model
         self._vl_model = (vl_model or "").strip()
+        self._thinking_mode = _normalize_thinking_mode(thinking_mode)
         self._timeout = timeout
 
     @property
@@ -172,13 +189,18 @@ class DashScopeClient(LLMClient):
     def chat(self, messages: list[dict]) -> str:
         """文本对话，使用 Generation API，失败时回退至 MultiModal API"""
         try:
-            response = self._ds.Generation.call(
-                api_key=self._ds.api_key,
-                model=self._text_model,
-                messages=messages,
-                result_format="message",
-                enable_thinking=False,
-            )
+            call_kwargs = {
+                "api_key": self._ds.api_key,
+                "model": self._text_model,
+                "messages": messages,
+                "result_format": "message",
+            }
+            if self._thinking_mode == "on":
+                call_kwargs["enable_thinking"] = True
+            elif self._thinking_mode == "off":
+                call_kwargs["enable_thinking"] = False
+
+            response = self._ds.Generation.call(**call_kwargs)
             # 专有云/私有空间部署的 VL 大模型，对 Generation 接口可能返回 400 url error
             if response.status_code == 400 and ("url error" in str(response.message).lower() or "check url" in str(response.message).lower()):
                 return self._chat_via_multimodal(messages)
@@ -213,12 +235,17 @@ class DashScopeClient(LLMClient):
             else:
                 mm_messages.append(msg)
 
-        response = self._ds.MultiModalConversation.call(
-            api_key=self._ds.api_key,
-            model=self._text_model,
-            messages=mm_messages,
-            enable_thinking=False,
-        )
+        call_kwargs = {
+            "api_key": self._ds.api_key,
+            "model": self._text_model,
+            "messages": mm_messages,
+        }
+        if self._thinking_mode == "on":
+            call_kwargs["enable_thinking"] = True
+        elif self._thinking_mode == "off":
+            call_kwargs["enable_thinking"] = False
+
+        response = self._ds.MultiModalConversation.call(**call_kwargs)
         if response.status_code != 200:
             raise RuntimeError(
                 f"DashScope 文本回退多模态请求失败 [{response.status_code}]: {response.message}"
@@ -232,26 +259,14 @@ class DashScopeClient(LLMClient):
         return str(content)
 
     def chat_vision(self, text_prompt: str, image: Image.Image) -> str:
-        """
-        多模态对话，使用 MultiModalConversation API
-        
-        重要: 需要使用支持视觉的模型，例如:
-          - qwen-vl-plus
-          - qwen-vl-max  
-          - qwen2.5-vl-7b-instruct
-        
-        qwen3.6-flash 等文本模型不支持图像输入，会返回 400 错误。
-        """
         if not self._vl_model:
             raise RuntimeError("未配置 VL 模型。请在设置中配置【VL 模型】后再试。")
 
-        # 优先使用临时文件（比 base64 更稳定）
         temp_path = _save_image_to_temp(image)
         try:
             return self._chat_vision_file(text_prompt, temp_path)
         except Exception as e:
             err_str = str(e)
-            # 如果文件方式失败，尝试 base64 data URI
             if "400" in err_str or "unsupported" in err_str.lower():
                 try:
                     return self._chat_vision_base64(text_prompt, image)
@@ -282,12 +297,17 @@ class DashScopeClient(LLMClient):
                 ],
             }
         ]
-        response = self._ds.MultiModalConversation.call(
-            api_key=self._ds.api_key,
-            model=self._vl_model,
-            messages=messages,
-            enable_thinking=False,
-        )
+        call_kwargs = {
+            "api_key": self._ds.api_key,
+            "model": self._vl_model,
+            "messages": messages,
+        }
+        if self._thinking_mode == "on":
+            call_kwargs["enable_thinking"] = True
+        elif self._thinking_mode == "off":
+            call_kwargs["enable_thinking"] = False
+
+        response = self._ds.MultiModalConversation.call(**call_kwargs)
         return self._extract_vl_response(response)
 
     def _chat_vision_base64(self, text_prompt: str, image: Image.Image) -> str:
@@ -302,12 +322,17 @@ class DashScopeClient(LLMClient):
                 ],
             }
         ]
-        response = self._ds.MultiModalConversation.call(
-            api_key=self._ds.api_key,
-            model=self._vl_model,
-            messages=messages,
-            enable_thinking=False,
-        )
+        call_kwargs = {
+            "api_key": self._ds.api_key,
+            "model": self._vl_model,
+            "messages": messages,
+        }
+        if self._thinking_mode == "on":
+            call_kwargs["enable_thinking"] = True
+        elif self._thinking_mode == "off":
+            call_kwargs["enable_thinking"] = False
+
+        response = self._ds.MultiModalConversation.call(**call_kwargs)
         return self._extract_vl_response(response)
 
     def _extract_vl_response(self, response) -> str:
@@ -340,6 +365,7 @@ class OllamaClient(OpenAIClient):
         base_url: str = "http://localhost:11434",
         text_model: str = "llama3.2",
         vl_model: Optional[str] = None,
+        thinking_mode: str | bool = "default",
     ) -> None:
         api_base = base_url.rstrip("/") + "/v1"
         super().__init__(
@@ -347,6 +373,7 @@ class OllamaClient(OpenAIClient):
             api_key="ollama",
             model=text_model,
             vl_model=vl_model or text_model,
+            thinking_mode=thinking_mode,
         )
         self._name = "Ollama"
 
@@ -368,6 +395,7 @@ def create_client(provider: str | dict, cfg: dict | None = None) -> LLMClient:
         api_key = profile.get("api_key", "")
         text_model = profile.get("text_model", "")
         vl_model = profile.get("vl_model", "")
+        thinking_mode = profile.get("thinking_mode", profile.get("enable_thinking", "default"))
     else:
         api_type = provider
         cfg = cfg or {}
@@ -375,6 +403,7 @@ def create_client(provider: str | dict, cfg: dict | None = None) -> LLMClient:
         api_key = cfg.get("api_key", "")
         text_model = cfg.get("text_model", "")
         vl_model = cfg.get("vl_model", "")
+        thinking_mode = cfg.get("thinking_mode", cfg.get("enable_thinking", "default"))
 
     if api_type == "dashscope":
         return DashScopeClient(
@@ -382,6 +411,7 @@ def create_client(provider: str | dict, cfg: dict | None = None) -> LLMClient:
             text_model=text_model or "qwen-turbo",
             vl_model=vl_model or "qwen-vl-plus",
             base_url=base_url,
+            thinking_mode=thinking_mode,
         )
     elif api_type == "openai":
         return OpenAIClient(
@@ -389,12 +419,14 @@ def create_client(provider: str | dict, cfg: dict | None = None) -> LLMClient:
             api_key=api_key,
             model=text_model or "gpt-4o-mini",
             vl_model=vl_model or "gpt-4o",
+            thinking_mode=thinking_mode,
         )
     elif api_type == "ollama":
         return OllamaClient(
             base_url=base_url or "http://localhost:11434",
             text_model=text_model or "llama3.2",
             vl_model=vl_model,
+            thinking_mode=thinking_mode,
         )
     else:
         return OpenAIClient(
@@ -402,8 +434,8 @@ def create_client(provider: str | dict, cfg: dict | None = None) -> LLMClient:
             api_key=api_key,
             model=text_model,
             vl_model=vl_model,
+            thinking_mode=thinking_mode,
         )
-
 
 
 def parse_json_response(response: str) -> dict:

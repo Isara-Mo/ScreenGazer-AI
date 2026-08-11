@@ -19,6 +19,7 @@ DEFAULT_MODELS: list[dict[str, Any]] = [
         "api_key": "",
         "text_model": "qwen-turbo",
         "vl_model": "qwen3.6-flash",
+        "thinking_mode": "default",
     },
     {
         "id": "openai_default",
@@ -28,6 +29,7 @@ DEFAULT_MODELS: list[dict[str, Any]] = [
         "api_key": "",
         "text_model": "gpt-4o-mini",
         "vl_model": "gpt-4o",
+        "thinking_mode": "default",
     },
     {
         "id": "ollama_default",
@@ -37,6 +39,7 @@ DEFAULT_MODELS: list[dict[str, Any]] = [
         "api_key": "",
         "text_model": "llama3.2",
         "vl_model": "llava",
+        "thinking_mode": "default",
     },
 ]
 
@@ -240,7 +243,17 @@ class ConfigManager:
 
     def get_model_profiles(self) -> list[dict[str, Any]]:
         """获取所有模型配置 profile"""
-        return self._deep_copy(self._config.get("models", DEFAULT_MODELS))
+        profiles = self._deep_copy(self._config.get("models", DEFAULT_MODELS))
+        for p in profiles:
+            if "thinking_mode" not in p:
+                old_val = p.pop("enable_thinking", None)
+                if old_val is True:
+                    p["thinking_mode"] = "on"
+                elif old_val is False:
+                    p["thinking_mode"] = "off"
+                else:
+                    p["thinking_mode"] = "default"
+        return profiles
 
     def get_model_profile(self, profile_id: str) -> dict[str, Any] | None:
         """根据 ID 获取特定模型配置 profile"""

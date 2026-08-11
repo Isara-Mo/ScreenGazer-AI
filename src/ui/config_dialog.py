@@ -306,12 +306,24 @@ class ConfigDialog(QDialog):
         self._profile_vl_model_edit.setPlaceholderText("例如: qwen-vl-max / gpt-4o")
         self._profile_vl_model_edit.textEdited.connect(self._on_form_edited)
 
+        self._profile_thinking_combo = QComboBox()
+        self._profile_thinking_combo.addItem("默认 (不发送参数 / API 自动决定)", "default")
+        self._profile_thinking_combo.addItem("强制关闭 (发送 false / 极速模式)", "off")
+        self._profile_thinking_combo.addItem("强制开启 (发送 true / 深度思考)", "on")
+        self._profile_thinking_combo.currentIndexChanged.connect(self._on_form_edited)
+
         form_layout.addRow("模型配置名称:", self._profile_name_edit)
         form_layout.addRow("接口类型:", self._profile_type_combo)
         form_layout.addRow("Base URL:", self._profile_base_url_edit)
         form_layout.addRow("API Key:", self._profile_api_key_edit)
         form_layout.addRow("文本模型名称:", self._profile_text_model_edit)
         form_layout.addRow("VL 视觉模型名称:", self._profile_vl_model_edit)
+        form_layout.addRow("Thinking 模式:", self._profile_thinking_combo)
+
+        thinking_note = QLabel("提示:『默认』不向 API 发送任何思考参数，避免标准模型报错；『强制关闭』显式发送 false 禁用思考；『强制开启』显式发送 true 触发推理。")
+        thinking_note.setStyleSheet("color: #6b7280; font-size: 11px;")
+        thinking_note.setWordWrap(True)
+        form_layout.addRow(thinking_note)
 
         right_layout.addWidget(edit_group)
 
@@ -348,6 +360,15 @@ class ConfigDialog(QDialog):
         self._profile_text_model_edit.setText(p.get("text_model", ""))
         self._profile_vl_model_edit.setText(p.get("vl_model", ""))
 
+        self._profile_thinking_combo.blockSignals(True)
+        mode_val = p.get("thinking_mode", "default")
+        idx = self._profile_thinking_combo.findData(mode_val)
+        if idx >= 0:
+            self._profile_thinking_combo.setCurrentIndex(idx)
+        else:
+            self._profile_thinking_combo.setCurrentIndex(0)
+        self._profile_thinking_combo.blockSignals(False)
+
         self._profile_name_edit.blockSignals(False)
         self._profile_type_combo.blockSignals(False)
         self._profile_base_url_edit.blockSignals(False)
@@ -372,6 +393,7 @@ class ConfigDialog(QDialog):
         p["api_key"] = self._profile_api_key_edit.text().strip()
         p["text_model"] = self._profile_text_model_edit.text().strip()
         p["vl_model"] = self._profile_vl_model_edit.text().strip()
+        p["thinking_mode"] = self._profile_thinking_combo.currentData() or "default"
 
         # 实时更新 ListWidget 中的标题
         item = self._profile_list.item(self._current_profile_index)
@@ -472,6 +494,7 @@ class ConfigDialog(QDialog):
             "api_key": "",
             "text_model": "gpt-4o-mini",
             "vl_model": "",
+            "thinking_mode": "default",
         }
         self._model_profiles.append(new_profile)
         self._refresh_profile_list(select_id=new_id)
