@@ -9,6 +9,7 @@ venv.bak/
 
 # User config (contains API keys!)
 config.json
+vocab.txt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
