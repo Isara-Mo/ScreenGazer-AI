@@ -32,9 +32,10 @@ class WatchWorker(QThread):
         self,
         capture_fn: Callable[[], Optional[Image.Image]],
         quick_ocr_fn: Callable[[Image.Image], str],
-        poll_interval: float = 0.5,
-        stability_count: int = 3,
-        hash_threshold: int = 8,
+        poll_interval: float = 0.3,
+        stability_count: int = 2,
+        hash_threshold: int = 5,
+        cooldown_seconds: float = 0.5,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -43,6 +44,7 @@ class WatchWorker(QThread):
         self._poll_interval = poll_interval
         self._stability_count = stability_count
         self._hash_threshold = hash_threshold
+        self._cooldown_seconds = cooldown_seconds
         self._watcher: Optional[ChangeWatcher] = None
         self._stop_flag = False
 
@@ -60,6 +62,7 @@ class WatchWorker(QThread):
             poll_interval=self._poll_interval,
             stability_count=self._stability_count,
             hash_threshold=self._hash_threshold,
+            cooldown_seconds=self._cooldown_seconds,
         )
         self._watcher.start()
 

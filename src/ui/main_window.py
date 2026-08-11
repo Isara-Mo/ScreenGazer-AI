@@ -427,9 +427,10 @@ class MainWindow(QMainWindow):
         self._watch_worker = WatchWorker(
             capture_fn=capture_fn,
             quick_ocr_fn=quick_ocr_fn,
-            poll_interval=self._cfg.get("watcher", "poll_interval", default=0.5),
-            stability_count=self._cfg.get("watcher", "stability_count", default=3),
-            hash_threshold=self._cfg.get("watcher", "hash_threshold", default=8),
+            poll_interval=self._cfg.get("watcher", "poll_interval", default=0.3),
+            stability_count=self._cfg.get("watcher", "stability_count", default=2),
+            hash_threshold=self._cfg.get("watcher", "hash_threshold", default=5),
+            cooldown_seconds=self._cfg.get("watcher", "cooldown_seconds", default=0.5),
         )
         self._watch_worker.translation_needed.connect(self._on_translation_needed)
         self._watch_worker.status_changed.connect(self._on_watch_status)

@@ -147,15 +147,17 @@ class PaddleOCREngine(OCREngine):
             return self._ocr
 
         from paddleocr import PaddleOCR
-
-        # 强制静默 ppocr 内部的 logging 输出
         import logging
+        import warnings
+
+        # 强制静默 ppocr 及相关库的 logging 和 warning 输出
         logging.getLogger("ppocr").setLevel(logging.ERROR)
         logging.getLogger("ppocr").propagate = False
+        warnings.filterwarnings("ignore")
 
         # 尝试 3.x API（参数更少，简洁）
         try:
-            self._ocr = PaddleOCR(lang=self.lang, show_log=False)
+            self._ocr = PaddleOCR(use_angle_cls=False, lang=self.lang, show_log=False)
             # 检查是否支持 predict()（3.x 特有）
             if hasattr(self._ocr, 'predict'):
                 self._api_version = 3
@@ -163,12 +165,18 @@ class PaddleOCREngine(OCREngine):
                 self._api_version = 2
         except TypeError:
             # 2.x 的旧 API
-            self._ocr = PaddleOCR(
-                use_angle_cls=True,
-                lang=self.lang,
-                show_log=False,
-                use_gpu=False,
-            )
+            try:
+                self._ocr = PaddleOCR(
+                    use_angle_cls=False,
+                    lang=self.lang,
+                    show_log=False,
+                    use_gpu=False,
+                )
+            except Exception:
+                self._ocr = PaddleOCR(
+                    lang=self.lang,
+                    show_log=False,
+                )
             self._api_version = 2
 
         return self._ocr
@@ -181,6 +189,11 @@ class PaddleOCREngine(OCREngine):
             )
 
         import numpy as np
+        import logging
+        import warnings
+        logging.getLogger("ppocr").setLevel(logging.ERROR)
+        warnings.filterwarnings("ignore")
+
         img_array = np.array(image.convert("RGB"))
         ocr = self._get_ocr()
 
@@ -189,7 +202,9 @@ class PaddleOCREngine(OCREngine):
         if self._api_version == 3:
             # PaddleOCR 3.x: 使用 predict() 方法
             try:
-                results = ocr.predict(img_array)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    results = ocr.predict(img_array)
                 for item in (results or []):
                     if isinstance(item, dict):
                         # 新格式: {'rec_texts': [...], 'rec_scores': [...], ...}
@@ -208,7 +223,9 @@ class PaddleOCREngine(OCREngine):
                 return self.recognize(image)
         else:
             # PaddleOCR 2.x: 使用 ocr() 方法
-            result = ocr.ocr(img_array, cls=True)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                result = ocr.ocr(img_array, cls=False)
             if result and result[0]:
                 for line in result[0]:
                     if line and len(line) >= 2:

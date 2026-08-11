@@ -17,7 +17,8 @@ Visual Novel English learning and translation tool — Real-time screen capture 
 - 🧱 **Independent Dual Floating Panels & Subtitle Bar**: Split English original text and Chinese translation into independent floating windows. Drag the Chinese translation box to the bottom of your game screen and resize it into a sleek long subtitle bar! Includes collapsible OCR raw text toggle (`📄 OCR Raw`).
 - 📖 **Interactive Word Lookup**: Click any English word in the result panel to see its contextual meaning. Drag to select phrases.
 - ⌨ **Hotkeys**: Press `Ctrl+Shift+T` to instantly translate (customizable).
-- 👁 **Auto Monitor**: Polls the screen every 0.5s and auto-translates when text stabilizes.
+- 👁 **Auto Monitor & Smart Anti-Spam**: Polls the screen with ultra-fast frame-difference hashing and intelligent text deduplication. Includes a configurable cooldown period (default 0.5s) to eliminate duplicate API calls and background animation loops completely.
+- ⚡ **Asynchronous Non-Blocking Engine**: Multi-threaded QThread workflow without UI freezes, with silenced PaddleOCR warning output for a clean console experience.
 - 🧠 **Flexible Thinking Mode Control**: Supports 3-state Thinking mode selection (Default / Force Off / Force On) per model profile for optimal speed or deep reasoning.
 
 ### Quick Start
@@ -49,13 +50,14 @@ uv run main.py
 
 ### 功能特性
 - 📸 **智能区域截图**: 鼠标拖拽选定屏幕区域，支持动态绑定目标游戏窗口。无论窗口如何移动或高 DPI 缩放，截图区域都能精准追踪。
-- 🔍 **OCR 识别**: 支持 Tesseract（本地快速）或 PaddleOCR（极其精准，已锁定至无 Bug 的稳定 2.x 版本）。
+- 🔍 **OCR 识别**: 支持 Tesseract（本地快速）或 PaddleOCR（极其精准，内置警告静默与自动兼容）。
 - 🤖 **AI 翻译**: 自动矫正 OCR 错误并翻译为中文，要求模型使用 JSON 格式结构化返回，避免格式错乱。
 - 🖼 **VL 直接识别**: 截图直接发给视觉大模型（如 `qwen-vl-plus`）识别+翻译（完美应对艺术字和特殊排版）。
 - 🧱 **独立拆分双浮窗 & 长条字幕框**: 支持将英文矫正原文与中文翻译拆分为 2 个独立浮窗。中文翻译框可单独拖拽至游戏屏幕最底部拉成长条字幕框（Subtitles Bar），界面缩放与摆放更自由。内置折叠式 `📄 OCR原文` 展收按钮。
 - 📖 **交互式查词**: 在结果面板中**单击**任何英文单词，即可在弹窗中查看其在当前语境中的精确含义。支持拖选词组。
 - ⌨ **快捷键触发**: 按 `Ctrl+Shift+T` 立即进行翻译（可自由自定义）。
-- 👁 **自动监视**: 0.5s 轮询检测画面变化，当游戏对话文本输出完毕稳定后，自动触发翻译。
+- 👁 **智能防刷屏自动监视**: 基于超快图像帧差与智能文本去重算法，当游戏对话文本输出完毕稳定后自动触发翻译。搭配可调冷却期（默认 0.5s），彻底拦截重复 API 发包与背景动画干扰。
+- ⚡ **异步非阻塞引擎**: 全流程异步 QThread 调度，请求期间界面无卡顿无冻结；静默 PaddleOCR 终端警告，保障控制台输出干净无冗余。
 - 🧠 **灵活的三态 Thinking 控制**: 支持为每个模型独立设置 3 态深度思考模式（默认 / 强制关闭 / 强制开启），兼顾极速响应与复杂推理需求。
 
 ### 快速开始
