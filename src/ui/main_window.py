@@ -751,20 +751,16 @@ class MainWindow(QMainWindow):
 
     # ─── 关闭事件 ────────────────────────────────────────────
     def closeEvent(self, event) -> None:
-        """关闭主窗口时最小化到托盘"""
-        event.ignore()
-        self.hide()
-        self._tray.showMessage(
-            "VN 翻译助手",
-            "程序已最小化到系统托盘，双击图标可重新打开",
-            QSystemTrayIcon.MessageIcon.Information,
-            2000,
-        )
+        """关闭主窗口时彻底退出程序"""
+        self.quit_app()
+        event.accept()
 
     def quit_app(self) -> None:
-        """完全退出程序"""
+        """完全退出程序并释放资源"""
         self._stop_watching()
         self._hotkey_mgr.unregister_all()
+        if hasattr(self, "_tray") and self._tray:
+            self._tray.hide()
         if self._result_panel:
             self._result_panel.close()
         if self._word_tooltip:

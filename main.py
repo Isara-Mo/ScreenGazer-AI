@@ -47,8 +47,8 @@ def main():
     app.setApplicationDisplayName("视觉小说翻译助手")
     app.setOrganizationName("VNTranslator")
 
-    # 设置应用程序不随最后一个窗口关闭而退出（托盘模式）
-    app.setQuitOnLastWindowClosed(False)
+    # 设置应用程序关闭主窗口时自动退出
+    app.setQuitOnLastWindowClosed(True)
 
     try:
         print("[Startup] 正在创建主窗口...")
