@@ -6,7 +6,7 @@ Config Dialog - tabbed settings for models, OCR, prompts, and hotkeys
 from __future__ import annotations
 
 import time
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QThread, Slot
 from PySide6.QtGui import QFont, QColor
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTabWidget,
@@ -153,6 +153,26 @@ def make_divider() -> QFrame:
     return line
 
 
+class TestConnectionWorker(QThread):
+    """在后台线程中测试模型连接，避免阻塞 GUI 主线程"""
+    test_finished = Signal(bool, str, str)  # (success, response_or_error, profile_name)
+
+    def __init__(self, profile: dict, parent=None) -> None:
+        super().__init__(parent)
+        self._profile = dict(profile)
+
+    def run(self) -> None:
+        profile_name = self._profile.get("name", "未命名模型")
+        try:
+            from src.core.llm_client import create_client
+            # 为测试连接设置较短超时（如 15s），避免长时间挂起
+            client = create_client(self._profile)
+            response = client.chat([{"role": "user", "content": "Say 'OK' in one word."}])
+            self.test_finished.emit(True, response[:100], profile_name)
+        except Exception as e:
+            self.test_finished.emit(False, str(e), profile_name)
+
+
 class ConfigDialog(QDialog):
     """配置对话框，应用更改时发出信号通知主窗口重新初始化"""
 
@@ -170,6 +190,7 @@ class ConfigDialog(QDialog):
         self._active_model_id: str = "dashscope_default"
         self._active_lookup_model_id: str = "same"
         self._current_profile_index: int = -1
+        self._test_worker: TestConnectionWorker | None = None
 
         self._setup_ui()
         self._load_values()
@@ -900,16 +921,42 @@ class ConfigDialog(QDialog):
             self._load_values()
 
     def _test_connection(self) -> None:
-        """测试当前编辑框中的模型配置连接"""
+        """测试当前编辑框中的模型配置连接（异步非阻塞版）"""
         self._on_form_edited()
         if self._current_profile_index < 0 or self._current_profile_index >= len(self._model_profiles):
             return
 
+        if self._test_worker and self._test_worker.isRunning():
+            return
+
         profile = self._model_profiles[self._current_profile_index]
-        try:
-            from src.core.llm_client import create_client
-            client = create_client(profile)
-            response = client.chat([{"role": "user", "content": "Say 'OK' in one word."}])
-            QMessageBox.information(self, "连接成功", f"✅ 模型 [{profile.get('name')}] 响应正常\n响应: {response[:100]}")
-        except Exception as e:
-            QMessageBox.critical(self, "连接失败", f"❌ 模型 [{profile.get('name')}] 连接失败\n\n{e}")
+
+        self._test_profile_btn.setEnabled(False)
+        self._test_profile_btn.setText("⏳ 测试中，请稍候...")
+
+        self._test_worker = TestConnectionWorker(profile, self)
+        self._test_worker.test_finished.connect(self._on_test_finished)
+        self._test_worker.start()
+
+    @Slot(bool, str, str)
+    def _on_test_finished(self, success: bool, msg: str, profile_name: str) -> None:
+        self._test_profile_btn.setEnabled(True)
+        self._test_profile_btn.setText("🧪 测试当前模型连接")
+
+        if success:
+            QMessageBox.information(
+                self,
+                "连接成功",
+                f"✅ 模型 [{profile_name}] 响应正常\n\n响应: {msg}"
+            )
+        else:
+            QMessageBox.critical(
+                self,
+                "连接失败",
+                f"❌ 模型 [{profile_name}] 连接失败\n\n{msg}"
+            )
+
+    def closeEvent(self, event) -> None:
+        if self._test_worker and self._test_worker.isRunning():
+            self._test_worker.terminate()
+        super().closeEvent(event)
