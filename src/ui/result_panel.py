@@ -103,11 +103,12 @@ QLabel.loadingLabel {
 
 class ClickableTextEdit(QTextEdit):
     """
-    支持单词点击查询的英文文本框
+    支持单词点击查询与直接划词/划短语讲解的英文文本框
+    内置词界自动吸附/补全 (Word-Boundary Snapping)
     
     交互规则:
-    - 单击: 选中光标处单词，立即触发查词
-    - Ctrl + 拖拽/多次单击: 积累选词范围，Ctrl 松开时触发查词
+    - 单击单词: 自动选中光标处单词，立即触发查词
+    - 划词/划短语: 拖拽划选文本，若首尾单词没有划完整，系统自动扩展补全至完整单词并高亮，立即触发讲解
     """
 
     word_lookup_requested = Signal(str)   # 触发查词，携带选中文本
@@ -122,58 +123,73 @@ class ClickableTextEdit(QTextEdit):
         )
         self.setCursor(QCursor(Qt.CursorShape.IBeamCursor))
 
-        self._ctrl_mode = False          # 是否在 Ctrl 多选模式
-        self._ctrl_selection_start: Optional[int] = None
-        self._ctrl_selection_end: Optional[int] = None
-
         font = QFont("Georgia", 13)
         font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 102)
         self.setFont(font)
 
-    def mousePressEvent(self, event: QMouseEvent) -> None:
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        super().mouseReleaseEvent(event)
         if event.button() == Qt.MouseButton.LeftButton:
-            ctrl_held = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
-            if ctrl_held:
-                self._ctrl_mode = True
-                cursor = self.cursorForPosition(event.position().toPoint())
-                pos = cursor.position()
-                if self._ctrl_selection_start is None:
-                    self._ctrl_selection_start = pos
-                    self._ctrl_selection_end = pos
-                else:
-                    self._ctrl_selection_end = pos
-                self._highlight_ctrl_selection()
+            cursor = self.textCursor()
+
+            # 1. 若用户拖拽划选了具体文本区域
+            if cursor.hasSelection() and abs(cursor.selectionStart() - cursor.selectionEnd()) > 0:
+                selected_text = self._expand_selection_to_word_boundaries()
+                if selected_text:
+                    self.word_lookup_requested.emit(selected_text)
             else:
-                self._ctrl_mode = False
-                self._ctrl_selection_start = None
-                self._ctrl_selection_end = None
-                super().mousePressEvent(event)
+                # 2. 普通单击 (未划选)，自动选中光标位置下的当前单词
                 self._select_word_at_cursor()
                 self._trigger_lookup()
 
-    def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        if self._ctrl_mode and bool(event.buttons() & Qt.MouseButton.LeftButton):
-            cursor = self.cursorForPosition(event.position().toPoint())
-            self._ctrl_selection_end = cursor.position()
-            self._highlight_ctrl_selection()
-        else:
-            super().mouseMoveEvent(event)
+    def _expand_selection_to_word_boundaries(self) -> str:
+        """
+        自动补全划选的首尾残缺单词 (Word-Boundary Snapping 精准版)
+        - 若划选的纯粹是空格/标点，不进行扩展与查词；
+        - 若首尾触及字母/数字，才向外延伸对齐单词边界，绝不跨越空格侵入无关的邻近词。
+        """
+        cursor = self.textCursor()
+        if not cursor.hasSelection():
+            return ""
 
-    def keyPressEvent(self, event: QKeyEvent) -> None:
-        if event.key() == Qt.Key.Key_Control:
-            self._ctrl_mode = True
-        super().keyPressEvent(event)
+        raw_selected = cursor.selectedText().replace('\u2029', ' ')
+        # 如果选中的纯粹是空格、换行或不含任何单词字符，跳过查词与扩展
+        if not raw_selected.strip() or not any(c.isalnum() for c in raw_selected):
+            return ""
 
-    def keyReleaseEvent(self, event: QKeyEvent) -> None:
-        if event.key() == Qt.Key.Key_Control and self._ctrl_mode:
-            self._ctrl_mode = False
-            if self._ctrl_selection_start is not None:
-                selected = self._get_ctrl_selection_text()
-                if selected.strip():
-                    self.word_lookup_requested.emit(selected.strip())
-            self._ctrl_selection_start = None
-            self._ctrl_selection_end = None
-        super().keyReleaseEvent(event)
+        doc = self.document()
+        start = cursor.selectionStart()
+        end = cursor.selectionEnd()
+
+        c_start = QTextCursor(doc)
+        c_start.setPosition(start)
+        # 仅当 start 位置正好落于字母/数字/词内部字符时，才向左退回至单词开头
+        char_at_start = doc.characterAt(start)
+        if char_at_start.isalnum() or char_at_start in ("'", "-"):
+            c_start.movePosition(QTextCursor.MoveOperation.StartOfWord)
+
+        c_end = QTextCursor(doc)
+        c_end.setPosition(end)
+        # 仅当 end 紧左侧字符为字母/数字/词内部字符时，才向右延伸至单词结尾
+        char_before_end = doc.characterAt(max(0, end - 1))
+        if char_before_end.isalnum() or char_before_end in ("'", "-"):
+            c_end.movePosition(QTextCursor.MoveOperation.EndOfWord)
+
+        # 构造扩展后的对齐选区
+        expanded_cursor = QTextCursor(doc)
+        expanded_cursor.setPosition(c_start.position())
+        expanded_cursor.setPosition(c_end.position(), QTextCursor.MoveMode.KeepAnchor)
+
+        raw_text = expanded_cursor.selectedText().replace('\u2029', ' ').strip()
+        if not raw_text or not any(c.isalnum() for c in raw_text):
+            return ""
+
+        # 更新输入框视觉高亮，用户可直观看到对齐补全后的文本
+        self.setTextCursor(expanded_cursor)
+
+        # 过滤首尾多余的修饰标点
+        clean_text = re.sub(r"^[^\w'-]+|[^\w'-]+$", "", raw_text)
+        return clean_text or raw_text
 
     def _select_word_at_cursor(self) -> None:
         """选中光标所在位置的单词"""
@@ -188,34 +204,6 @@ class ClickableTextEdit(QTextEdit):
         word = re.sub(r"[^\w'-]", "", selected)
         if word:
             self.word_lookup_requested.emit(word)
-
-    def _highlight_ctrl_selection(self) -> None:
-        if self._ctrl_selection_start is None or self._ctrl_selection_end is None:
-            return
-        cursor = self.textCursor()
-        start = min(self._ctrl_selection_start, self._ctrl_selection_end)
-        end = max(self._ctrl_selection_start, self._ctrl_selection_end)
-        cursor.setPosition(start)
-        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
-        self.setTextCursor(cursor)
-
-    def _get_ctrl_selection_text(self) -> str:
-        if self._ctrl_selection_start is None or self._ctrl_selection_end is None:
-            return ""
-        doc = self.document()
-        start = min(self._ctrl_selection_start, self._ctrl_selection_end)
-        end = max(self._ctrl_selection_start, self._ctrl_selection_end)
-
-        cursor_start = QTextCursor(doc)
-        cursor_start.setPosition(start)
-        cursor_start.movePosition(QTextCursor.MoveOperation.StartOfWord)
-
-        cursor_end = QTextCursor(doc)
-        cursor_end.setPosition(end)
-        cursor_end.movePosition(QTextCursor.MoveOperation.EndOfWord)
-
-        cursor_start.setPosition(cursor_end.position(), QTextCursor.MoveMode.KeepAnchor)
-        return cursor_start.selectedText()
 
 
 # ─── 独立浮窗基类 ─────────────────────────────────────────────
@@ -593,7 +581,7 @@ class EnglishPanel(FloatingSubPanel):
         content_layout.setContentsMargins(8, 6, 8, 6)
 
         self._english_edit = ClickableTextEdit()
-        self._english_edit.setPlaceholderText("矫正后的英文将显示在这里 (单击单词查词，Ctrl+拖拽选多词)...")
+        self._english_edit.setPlaceholderText("矫正后的英文将显示在这里 (单击单词或直接划选词组讲解)...")
         self._english_edit.word_lookup_requested.connect(self._on_word_lookup)
 
         # OCR 原文展收区域 (初始隐藏)
