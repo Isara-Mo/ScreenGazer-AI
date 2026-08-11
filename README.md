@@ -20,15 +20,21 @@
 - ⚡ **Full Asynchronous Non-Blocking Engine**: Multi-threaded `QThread` architecture ensures zero UI freezes during API requests, model connection testing, or OCR processing. Silenced PaddleOCR logger for a clean console.
 - 📤 **Vocab Export**: Save clicked words to an in-app vocabulary list and export to `vocab.txt`.
 
+### 💡 Recognition Modes Notice
+
+> **Note**: You do **NOT** need to configure both Text and VL models simultaneously unless you plan to use both modes. Simply configure the model required for your selected mode:
+> - **Mode 1: OCR + Text LLM (Default & Recommended)**: Uses OCR to extract text, then sends text to a Text LLM. **Requires ONLY a Text Model** (e.g., `qwen3.7-flash`). Fast response, low token consumption.
+> - **Mode 2: VL Model Direct Recognition**: Sends the screenshot directly to a Vision-Language Model. **Requires ONLY a VL Model** (e.g., `qwen3.7-flash` / `qwen3.7-plus`). Excellent for stylized fonts, complex game layouts, or manga.
+
 ### Recommended AI Models
 
-Here are recommended model configurations based on optimal speed, accuracy, and cost-effectiveness:
+Recommended model configurations based on optimal speed, translation accuracy, and cost-effectiveness:
 
-| Model Provider | Text Model | Vision (VL) Model | Best For |
+| Model Provider | Text Model | Vision (VL) Model | Recommendation & Use Cases |
 | :--- | :--- | :--- | :--- |
-| **DashScope (Alibaba)** | `qwen3.7-flash` / `qwen3.7-plus` | `qwen3.7-flash` / `qwen-vl-max` | **Recommended**: Ultra-fast response, excellent EN-ZH translation quality, low cost. |
-| **OpenAI Compatible** | `deepseek-chat` / `gpt-4o-mini` | `gpt-4o` / `qwen-vl-plus` | High precision, structured JSON output stability. |
-| **Ollama (Local)** | `Hy-MT2-7B` / `qwen2.5` | N/A | **100% Offline**: Free local translation with dedicated translation models (e.g., `Hy-MT2-7B`). |
+| **DashScope (Alibaba)** | `qwen3.7-flash` | `qwen3.7-flash` / `qwen3.7-plus` | **Top Pick**: Ultra-fast response (~1s), low token cost, excellent EN-ZH visual novel translation quality. |
+| **OpenAI Compatible** | `qwen3.7-flash` / `deepseek-v4-flash` | `qwen3.7-flash` / `qwen3.7-plus` | **Flexible Choice**: Highly stable JSON output, ideal for custom API proxies or DeepSeek compatible providers. |
+| **Ollama (Local)** | `Hy-MT2-7B` / `Qwen3.5 9B` / `Qwen3 4B` / `Qwen3 1.7B` | N/A | **100% Offline & Free**: Zero API costs or network latency. `Hy-MT2-7B` is specifically fine-tuned for translation; Qwen3 series provides versatile multi-size lightweight local inference. |
 
 ### Quick Start
 
@@ -45,7 +51,7 @@ uv run main.py
 
 #### 3. First-Time Setup
 1. Click **⚙ Settings (设置)**.
-2. Under **🤖 Model Settings**, configure your API Key and select your preferred Text & VL models.
+2. Under **🤖 Model Settings**, configure your API Key and select your preferred Text or VL model based on your recognition mode.
 3. Under **🔍 OCR**, choose between **PaddleOCR** (recommended) or **Tesseract**.
 4. Select your target game window or drag to select a screen area.
 
@@ -67,15 +73,21 @@ uv run main.py
 - ⚡ **全流程异步非阻塞架构**: 全多线程 `QThread` 架构，API 请求、连接测试、OCR 推理期间界面 0 卡顿 0 冻结；静默 PaddleOCR 终端 Warning 警告，保障控制台输出干净。
 - 📤 **单词本导出**: 交互查词自动积累到收藏夹，支持一键导出为 `vocab.txt` 单词本。
 
+### 💡 识别模式特别说明
+
+> **提示**：您**无需**同时配置文本模型与视觉模型！根据您在【识别模式】中选择的模式配置对应模型即可：
+> - **模式 1: OCR 识别 + 文本 LLM (默认推荐)**：先用 OCR 提取文字，再发送给文本大模型进行矫正与翻译。**仅需配置【文本模型】**（如 `qwen3.7-flash`）。响应极快、token 消耗少。
+> - **模式 2: VL 视觉大模型直接识别**：将截图直接发送给多模态大模型进行识图翻译。**仅需配置【VL 视觉模型】**（如 `qwen3.7-flash` / `qwen3.7-plus`）。完美应对艺术字、复杂排版或花体字体。
+
 ### 推荐 AI 模型配置
 
 基于测试与实际体验，推荐以下模型搭配方案：
 
 | 提供商 (Provider) | 文本模型 (Text Model) | 视觉模型 (VL Model) | 推荐理由与适用场景 |
 | :--- | :--- | :--- | :--- |
-| **阿里 DashScope (通义)** | `qwen3.7-flash` / `qwen3.7-plus` | `qwen3.7-flash` / `qwen-vl-max` | **首选推荐**：响应极快（秒出）、中英翻译地道流畅、Token 价格低廉。 |
-| **OpenAI 兼容接口** | `deepseek-chat` / `gpt-4o-mini` | `gpt-4o` / `qwen-vl-plus` | 结构化 JSON 返回极稳定，适合使用 DeepSeek 或第三方中转站。 |
-| **Ollama (本地私有化)** | `Hy-MT2-7B` / `qwen2.5` | - | **100% 离线免费**：搭配专用翻译微调模型（如 `Hy-MT2-7B`），无网络亦可流畅使用。 |
+| **阿里 DashScope (通义)** | `qwen3.7-flash` | `qwen3.7-flash` / `qwen3.7-plus` | **首选推荐**：毫秒级响应（秒出）、Token 价格低廉，视觉小说中英翻译质量地道流畅。 |
+| **OpenAI 兼容接口** | `qwen3.7-flash` / `deepseek-v4-flash` | `qwen3.7-flash` / `qwen3.7-plus` | **灵活中转**：JSON 结构化返回极稳定，适合使用 DeepSeek、通义兼容节点或第三方中转站。 |
+| **Ollama (本地私有化)** | `Hy-MT2-7B` / `Qwen3.5 9B` / `Qwen3 4B` / `Qwen3 1.7B` | - | **100% 离线免费**：无网络依赖与计费。`Hy-MT2-7B` 为专用翻译微调模型；Qwen3 系列提供多尺寸轻量级高效本地推理。 |
 
 ### 快速开始
 
@@ -92,7 +104,7 @@ uv run main.py
 
 #### 3. 首次配置
 1. 点击主界面上的 **⚙ 设置** 按钮。
-2. 在 **🤖 模型配置** 中填入您的 API Key 并选择模型（如 `qwen3.7-flash`）。
+2. 在 **🤖 模型配置** 中根据您选择的识别模式，填入 API Key 并指定【文本模型】或【VL 视觉模型】。
 3. 在 **🔍 OCR** 标签页选择 OCR 引擎（推荐 PaddleOCR）。
 4. 在主界面下拉框选择目标游戏窗口，点击 **▶ 开始监视** 或使用快捷键 `Ctrl+Shift+T`。
 
