@@ -1,88 +1,71 @@
-"""
-翻译任务 Worker (QThread)
-Translate Worker - runs OCR + LLM or VL translation in background
-"""
-
+"""Background translation with one replaceable pending request."""
 from __future__ import annotations
 
 from PIL import Image
-from PySide6.QtCore import QThread, Signal
-
-from src.core.translator import Translator, TranslationResult
+from PySide6.QtCore import QThread, Signal, Slot
+from src.core.translator import Translator
 
 
 class TranslateWorker(QThread):
-    """
-    在后台线程中执行翻译任务 (非阻塞版)
-    
-    Signals:
-        result_ready(TranslationResult): 翻译完成，携带结果
-        error_occurred(str): 翻译失败
-        started_working(): 开始工作（用于显示 loading 状态）
-    """
-
-    result_ready = Signal(object)       # TranslationResult
+    result_ready = Signal(object)
     error_occurred = Signal(str)
     started_working = Signal()
 
     def __init__(self, translator: Translator, parent=None) -> None:
         super().__init__(parent)
         self._translator = translator
-        self._image: Image.Image | None = None
-        self._mode: str = "ocr"   # "ocr" or "vl"
-        self._pending_image: Image.Image | None = None
-        self._pending_mode: str = "ocr"
+        self._pending = None
+        self._job = None
+        self._outcome = None
+        self._generation = 0
+        # isRunning() can turn false before Qt delivers finished. Do not
+        # replace the active job until the GUI has consumed its outcome.
+        self._busy = False
+        self.finished.connect(self._finish)
 
-    def translate(self, image: Image.Image, mode: str = "ocr") -> None:
-        """
-        提交翻译任务（非阻塞：若线程忙碌，缓存最新截图待完成后自动处理）
-        :param image: 截图
-        :param mode: "ocr" 或 "vl"
-        """
-        if self.isRunning():
-            # 正在翻译中，更新 pending 任务，不阻塞主线程 GUI
-            self._pending_image = image
-            self._pending_mode = mode
+    def translate(self, image: Image.Image, mode: str = "ocr", ocr_text: str | None = None) -> None:
+        self._generation += 1
+        self._pending = (self._generation, self._translator, image, mode, ocr_text)
+        if not self._busy:
+            self._start_pending()
+
+    def _start_pending(self) -> None:
+        if self._pending is None or self._busy:
             return
-
-        self._image = image
-        self._mode = mode
-        self._pending_image = None
+        self._job, self._pending = self._pending, None
+        self._outcome = None
+        self._busy = True
+        self.started_working.emit()
         self.start()
 
     def run(self) -> None:
-        while True:
-            current_image = self._image
-            current_mode = self._mode
+        _, translator, image, mode, ocr_text = self._job
+        try:
+            result = (translator.translate_vl(image, ocr_text=ocr_text) if mode == "vl"
+                      else translator.translate_ocr(image, ocr_text=ocr_text))
+            self._outcome = (result, "")
+        except Exception as exc:
+            self._outcome = (None, f"翻译异常: {exc}")
 
-            if current_image is None:
-                self.error_occurred.emit("没有可翻译的图像")
-                break
-
-            self.started_working.emit()
-
-            try:
-                if current_mode == "vl":
-                    result = self._translator.translate_vl(current_image)
-                else:
-                    result = self._translator.translate_ocr(current_image)
-
-                if result.error and not result.corrected:
-                    self.error_occurred.emit(result.error)
-                else:
-                    self.result_ready.emit(result)
-
-            except Exception as e:
-                self.error_occurred.emit(f"翻译异常: {e}")
-
-            # 检查是否有在翻译期间积压的最新待处理截图
-            if self._pending_image is not None:
-                self._image = self._pending_image
-                self._mode = self._pending_mode
-                self._pending_image = None
+    @Slot()
+    def _finish(self) -> None:
+        generation = self._job[0]
+        result, error = self._outcome
+        self._busy = False
+        if generation == self._generation:
+            if error:
+                self.error_occurred.emit(error)
+            elif result.error and not result.corrected:
+                self.error_occurred.emit(result.error)
             else:
-                break
+                self.result_ready.emit(result)
+        self._start_pending()
+
+    def cancel_pending(self) -> None:
+        """Drop queued work and ignore the active request's eventual result."""
+        self._generation += 1
+        self._pending = None
 
     def update_translator(self, translator: Translator) -> None:
-        """更新翻译器（切换模型或模式后调用）"""
+        self.cancel_pending()
         self._translator = translator

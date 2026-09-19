@@ -6,6 +6,7 @@ Config Dialog - tabbed settings for models, OCR, prompts, and hotkeys
 from __future__ import annotations
 
 import time
+import unicodedata
 from PySide6.QtCore import Qt, Signal, QThread, Slot
 from PySide6.QtGui import QFont, QColor
 from PySide6.QtWidgets import (
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.utils.config_manager import ConfigManager
+from src.core.glossary import GameGlossary, canonical_term_name
 
 
 DIALOG_STYLE = """
@@ -153,6 +155,34 @@ def make_divider() -> QFrame:
     return line
 
 
+def parse_custom_terms(text: str) -> dict[str, str]:
+    """Validate editable terminology before making any changes to configuration."""
+    terms: dict[str, str] = {}
+    seen: dict[str, int] = {}
+    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.count("=") != 1:
+            raise ValueError(f"第 {line_number} 行格式不正确：每行应为 English = 中文，且只能有一个 =。")
+        english, chinese = (part.strip() for part in line.split("=", 1))
+        if not english or not chinese:
+            raise ValueError(f"第 {line_number} 行有空值：英文名称和中文译名都不能为空。")
+        try:
+            GameGlossary(overrides={english: chinese})
+        except ValueError as exc:
+            raise ValueError(f"第 {line_number} 行：{exc}") from exc
+        normalized = canonical_term_name(unicodedata.normalize("NFKC", english)).casefold()
+        if normalized in seen:
+            raise ValueError(
+                f"第 {line_number} 行的英文名称“{english}”与第 {seen[normalized]} 行重复，"
+                "请合并为一条（不区分大小写、全半角及多余空白）。"
+            )
+        seen[normalized] = line_number
+        terms[english] = chinese
+    return terms
+
+
 class TestConnectionWorker(QThread):
     """在后台线程中测试模型连接，避免阻塞 GUI 主线程"""
     test_finished = Signal(bool, str, str)  # (success, response_or_error, profile_name)
@@ -212,6 +242,8 @@ class ConfigDialog(QDialog):
         self._tabs.addTab(self._build_model_tab(), "🤖 模型配置")
         self._tabs.addTab(self._build_ocr_tab(), "🔍 OCR")
         self._tabs.addTab(self._build_mode_tab(), "⚡ 识别模式")
+        self._game_tab = self._build_game_tab()
+        self._tabs.addTab(self._game_tab, "🎮 游戏适配")
         self._tabs.addTab(self._build_prompt_tab(), "📝 提示词")
         self._tabs.addTab(self._build_trigger_tab(), "⌨ 触发设置")
         self._tabs.addTab(self._build_ui_tab(), "🎨 界面")
@@ -697,6 +729,92 @@ class ConfigDialog(QDialog):
         layout.addStretch()
         return w
 
+    # ─── 游戏适配 Tab ────────────────────────────────────────
+    def _build_game_tab(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet(
+            "QScrollArea { background: #111128; } "
+            "QWidget#gameSettings { background: #111128; } "
+            "QCheckBox:disabled, QLabel:disabled { color: #64748b; } "
+            "QTextEdit:disabled { color: #64748b; background: #141428; } "
+            "QScrollBar:vertical { background: #111128; width: 10px; } "
+            "QScrollBar::handle:vertical { background: #374151; border-radius: 4px; min-height: 24px; } "
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; } "
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }"
+        )
+        inner = QWidget()
+        inner.setObjectName("gameSettings")
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(12)
+
+        game_form = QFormLayout()
+        self._game_profile = QComboBox()
+        self._game_profile.addItem("通用（所有游戏）", "generic")
+        self._game_profile.addItem("原神", "genshin")
+        game_form.addRow("当前游戏:", self._game_profile)
+        layout.addLayout(game_form)
+
+        self._genshin_group = QGroupBox("原神对白与译名")
+        group_layout = QVBoxLayout(self._genshin_group)
+        group_layout.setSpacing(10)
+
+        self._genshin_adaptive_dialogue = QCheckBox("自动排除金色人名 / 称号，适应多行对白")
+        self._genshin_use_glossary = QCheckBox("使用本地中英术语表，优先采用原神译名")
+        group_layout.addWidget(self._genshin_adaptive_dialogue)
+
+        capture_note = QLabel(
+            "保存后，在主窗口选择游戏窗口，点击“原神对白区域”，一次覆盖底部多行台词。"
+            "也可以手动框大一些并用“预览识别范围”检查，范围应同时包含人名、称号和完整对白。"
+            "识别时会根据金色人名 / 称号的位置排除标题；框外的文字无法恢复。"
+        )
+        capture_note.setWordWrap(True)
+        capture_note.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        group_layout.addWidget(capture_note)
+        group_layout.addWidget(make_divider())
+        group_layout.addWidget(self._genshin_use_glossary)
+
+        glossary_note = QLabel(
+            "仅将当前对白命中的中英对应项提供给模型，保留英文学习原文。"
+            "内置词表来自 Genshin Dictionary 社区公开数据，可能存在缺漏；识别时只查询本地词表。"
+            "下方自定义项可补充新角色、称号或覆盖内置译名。"
+        )
+        glossary_note.setWordWrap(True)
+        glossary_note.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        group_layout.addWidget(glossary_note)
+        source_link = QLabel(
+            '<a href="https://genshin-dictionary.com/en/opendata" style="color: #a78bfa;">'
+            "查看词表来源与开放数据说明</a>"
+        )
+        source_link.setOpenExternalLinks(True)
+        group_layout.addWidget(source_link)
+        group_layout.addWidget(QLabel("自定义术语（选填，每行 English = 中文）:"))
+        self._genshin_custom_terms = QTextEdit()
+        self._genshin_custom_terms.setAcceptRichText(False)
+        self._genshin_custom_terms.setPlaceholderText("Paimon = 派蒙\nLiyue = 璃月")
+        self._genshin_custom_terms.setMinimumHeight(105)
+        self._genshin_custom_terms.setMaximumHeight(135)
+        group_layout.addWidget(self._genshin_custom_terms)
+
+        cost_note = QLabel(
+            "建议使用“OCR + 文本大模型”模式。启用词表后，VL 识图遇到新增命中的术语时，"
+            "最多追加一次校正请求，增加耗时和 API 用量。切回通用游戏会保留以上选项。"
+        )
+        cost_note.setWordWrap(True)
+        cost_note.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        group_layout.addWidget(cost_note)
+        layout.addWidget(self._genshin_group)
+        layout.addStretch()
+        scroll.setWidget(inner)
+        self._game_profile.currentIndexChanged.connect(self._on_game_profile_changed)
+        self._on_game_profile_changed()
+        return scroll
+
+    def _on_game_profile_changed(self, _index: int = -1) -> None:
+        self._genshin_group.setEnabled(self._game_profile.currentData() == "genshin")
+
     # ─── 提示词 Tab ──────────────────────────────────────────
     def _build_prompt_tab(self) -> QWidget:
         w = QScrollArea()
@@ -736,8 +854,13 @@ class ConfigDialog(QDialog):
 
     # ─── 触发设置 Tab ────────────────────────────────────────
     def _build_trigger_tab(self) -> QWidget:
-        w = QWidget()
-        layout = QVBoxLayout(w)
+        w = QScrollArea()
+        w.setWidgetResizable(True)
+        w.setFrameShape(QFrame.Shape.NoFrame)
+        w.setStyleSheet("QScrollArea { background: #111128; } QWidget#triggerSettings { background: #111128; }")
+        inner = QWidget()
+        inner.setObjectName("triggerSettings")
+        layout = QVBoxLayout(inner)
         layout.setSpacing(12)
         layout.setContentsMargins(12, 12, 12, 12)
 
@@ -759,30 +882,77 @@ class ConfigDialog(QDialog):
         self._watcher_enabled = QCheckBox("启用自动变化检测")
         wg_layout.addRow(self._watcher_enabled)
 
+        self._watcher_preset = QComboBox()
+        self._watcher_preset.addItem("自动适应（推荐）", "auto")
+        self._watcher_preset.addItem("快速字幕", "fast")
+        self._watcher_preset.addItem("慢速打字", "stable")
+        self._watcher_preset.addItem("手动微调", "custom")
+        wg_layout.addRow("监视方案:", self._watcher_preset)
+
+        self._watcher_preset_note = QLabel()
+        self._watcher_preset_note.setWordWrap(True)
+        self._watcher_preset_note.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        wg_layout.addRow(self._watcher_preset_note)
+
+        self._watcher_custom_group = QGroupBox("手动参数（切换方案后仍会保留）")
+        custom_layout = QFormLayout(self._watcher_custom_group)
+
         self._poll_interval = QDoubleSpinBox()
         self._poll_interval.setRange(0.1, 5.0)
         self._poll_interval.setSingleStep(0.1)
         self._poll_interval.setDecimals(1)
         self._poll_interval.setSuffix(" 秒")
-        wg_layout.addRow("轮询间隔:", self._poll_interval)
+        self._poll_interval.setToolTip("本地 OCR 的基础检测间隔。间隔越短响应越快，但 CPU 占用可能增加。")
+        custom_layout.addRow("基础 OCR 间隔:", self._poll_interval)
 
         self._stability_count = QSpinBox()
         self._stability_count.setRange(1, 10)
         self._stability_count.setSuffix(" 次")
-        wg_layout.addRow("稳定确认次数:", self._stability_count)
+        self._stability_count.setToolTip("连续识别到稳定文本后才翻译。慢速打字可增加次数；快速字幕可减少。")
+        custom_layout.addRow("文本稳定确认次数:", self._stability_count)
 
         self._hash_threshold = QSpinBox()
         self._hash_threshold.setRange(1, 64)
-        wg_layout.addRow("图像变化阈值 (1-64):", self._hash_threshold)
+        custom_layout.addRow("帧变化提示阈值 (1-64):", self._hash_threshold)
 
-        threshold_note = QLabel("阈值越小越灵敏，推荐 5-10。对快速切换场景适当调大")
+        threshold_note = QLabel(
+            "帧变化只用于提示加快检测，不会阻止周期性 OCR。"
+            "阈值越小越容易加快检测；通常保留 8 即可。背景动画本身不会直接触发翻译。"
+        )
         threshold_note.setStyleSheet("color: #6b7280; font-size: 11px;")
         threshold_note.setWordWrap(True)
-        wg_layout.addRow(threshold_note)
+        custom_layout.addRow(threshold_note)
+        wg_layout.addRow(self._watcher_custom_group)
+
+        setup_note = QLabel(
+            "先只框选对话或字幕区域，尽量避开角色动画和其他界面文字。"
+            "默认使用自动适应；文字逐字出现且翻译过早时选“慢速打字”，"
+            "字幕切换很快时选“快速字幕”。只有需要进一步调整时才选“手动微调”。"
+        )
+        setup_note.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        setup_note.setWordWrap(True)
+        wg_layout.addRow(setup_note)
+
+        self._watcher_preset.currentIndexChanged.connect(self._on_watcher_preset_changed)
+        self._on_watcher_preset_changed()
 
         layout.addWidget(watcher_group)
         layout.addStretch()
+        w.setWidget(inner)
         return w
+
+    def _on_watcher_preset_changed(self, _index: int = -1) -> None:
+        preset = self._watcher_preset.currentData()
+        descriptions = {
+            "auto": "依据本地 OCR 耗时和文字空闲时长自动调整检测频率，在响应速度和性能之间取得平衡。无需调整下面的手动参数。",
+            "fast": "更频繁地检查文字并缩短稳定等待，适合快速切换的完整字幕；逐字出现的文本可能会较早翻译。",
+            "stable": "延长文本稳定等待，适合慢速打字或逐字显示的对话；完整句子的翻译会稍晚出现。",
+            "custom": "使用下方保存的手动参数。建议先调 OCR 间隔和文本稳定次数，再考虑帧变化提示阈值。",
+        }
+        self._watcher_preset_note.setText(descriptions.get(preset, descriptions["auto"]))
+        is_custom = preset == "custom"
+        self._watcher_custom_group.setVisible(is_custom)
+        self._watcher_custom_group.setEnabled(is_custom)
 
     # ─── UI 设置 Tab ─────────────────────────────────────────
     def _build_ui_tab(self) -> QWidget:
@@ -829,6 +999,19 @@ class ConfigDialog(QDialog):
         mode_map = {"ocr": 0, "vl": 1}
         self._mode_combo.setCurrentIndex(mode_map.get(c.get("recognition_mode"), 0))
 
+        # 游戏适配（停用时仍保留各项设置）
+        game_index = self._game_profile.findData(c.get("game", "profile", default="generic"))
+        self._game_profile.setCurrentIndex(max(game_index, 0))
+        self._genshin_adaptive_dialogue.setChecked(
+            c.get("game", "genshin", "adaptive_dialogue", default=True)
+        )
+        self._genshin_use_glossary.setChecked(c.get("game", "genshin", "use_glossary", default=True))
+        custom_terms = c.get("game", "genshin", "custom_terms", default={})
+        self._genshin_custom_terms.setPlainText(
+            "\n".join(f"{english} = {chinese}" for english, chinese in custom_terms.items())
+        )
+        self._on_game_profile_changed()
+
         # Prompts
         self._prompt_text.setPlainText(c.get("prompts", "translate_text") or "")
         self._prompt_vl.setPlainText(c.get("prompts", "translate_vl") or "")
@@ -836,13 +1019,16 @@ class ConfigDialog(QDialog):
 
         # 触发
         self._hotkey_edit.setText(c.get("hotkey") or "ctrl+shift+t")
-        self._watcher_enabled.setChecked(c.get("watcher", "enabled") or True)
-        self._poll_interval.setValue(c.get("watcher", "poll_interval") or 0.5)
-        self._stability_count.setValue(c.get("watcher", "stability_count") or 3)
-        self._hash_threshold.setValue(c.get("watcher", "hash_threshold") or 8)
+        self._watcher_enabled.setChecked(c.get("watcher", "enabled", default=True))
+        preset_index = self._watcher_preset.findData(c.get("watcher", "preset", default="auto"))
+        self._watcher_preset.setCurrentIndex(max(preset_index, 0))
+        self._on_watcher_preset_changed()
+        self._poll_interval.setValue(c.get("watcher", "poll_interval", default=0.3))
+        self._stability_count.setValue(c.get("watcher", "stability_count", default=2))
+        self._hash_threshold.setValue(c.get("watcher", "hash_threshold", default=8))
 
         # UI
-        self._always_on_top.setChecked(c.get("ui", "always_on_top") or True)
+        self._always_on_top.setChecked(c.get("ui", "always_on_top", default=True))
         self._font_size_en.setValue(c.get("ui", "font_size_en") or 13)
         self._font_size_zh.setValue(c.get("ui", "font_size_zh") or 14)
 
@@ -851,6 +1037,8 @@ class ConfigDialog(QDialog):
         self._on_ocr_engine_changed(self._ocr_engine_combo.currentIndex())
 
     def _save_values(self) -> None:
+        # Validate before save_models(), which persists immediately.
+        custom_terms = parse_custom_terms(self._genshin_custom_terms.toPlainText())
         self._on_form_edited()
         c = self._cfg
 
@@ -868,12 +1056,18 @@ class ConfigDialog(QDialog):
         modes = ["ocr", "vl"]
         c.set("recognition_mode", modes[self._mode_combo.currentIndex()])
 
+        c.set("game", "profile", self._game_profile.currentData() or "generic")
+        c.set("game", "genshin", "adaptive_dialogue", self._genshin_adaptive_dialogue.isChecked())
+        c.set("game", "genshin", "use_glossary", self._genshin_use_glossary.isChecked())
+        c.set("game", "genshin", "custom_terms", custom_terms)
+
         c.set("prompts", "translate_text", self._prompt_text.toPlainText())
         c.set("prompts", "translate_vl", self._prompt_vl.toPlainText())
         c.set("prompts", "word_lookup", self._prompt_lookup.toPlainText())
 
         c.set("hotkey", self._hotkey_edit.text().strip())
         c.set("watcher", "enabled", self._watcher_enabled.isChecked())
+        c.set("watcher", "preset", self._watcher_preset.currentData() or "auto")
         c.set("watcher", "poll_interval", self._poll_interval.value())
         c.set("watcher", "stability_count", self._stability_count.value())
         c.set("watcher", "hash_threshold", self._hash_threshold.value())
@@ -907,7 +1101,12 @@ class ConfigDialog(QDialog):
             )
             return
 
-        self._save_values()
+        try:
+            self._save_values()
+        except ValueError as exc:
+            self._tabs.setCurrentWidget(self._game_tab)
+            QMessageBox.warning(self, "自定义术语无法保存", str(exc))
+            return
         self.config_changed.emit()
         self.accept()
 

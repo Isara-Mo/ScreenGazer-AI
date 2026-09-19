@@ -6,15 +6,17 @@ Main Window - control hub for the VN translation tool
 from __future__ import annotations
 
 from typing import Optional
+import threading
 
 from PIL import Image
 from PySide6.QtCore import Qt, QTimer, Slot, QPoint
-from PySide6.QtGui import QFont, QIcon, QAction, QColor
+from PySide6.QtGui import QFont, QIcon, QAction, QColor, QPixmap
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFrame, QSystemTrayIcon, QMenu,
     QStatusBar, QGroupBox, QFormLayout, QComboBox,
     QApplication, QMessageBox, QFileDialog,
+    QDialog, QDialogButtonBox, QScrollArea,
 )
 
 from src.utils.config_manager import ConfigManager
@@ -23,10 +25,11 @@ from src.core.capture import (
     CaptureRegion, capture_region, find_window_by_title,
     list_windows, WindowInfo,
 )
-from src.core.ocr_engine import create_engine, TesseractEngine
+from src.core.ocr_engine import create_engine
 from src.core.llm_client import create_client
 from src.core.translator import Translator
-from src.core.watcher import ChangeWatcher
+from src.core.game_capture import GENSHIN_DIALOGUE_REGION, prepare_genshin_dialogue
+from src.core.glossary import GameGlossary
 from src.workers.watch_worker import WatchWorker
 from src.workers.translate_worker import TranslateWorker
 from src.workers.word_lookup_worker import WordLookupWorker
@@ -150,6 +153,9 @@ class MainWindow(QMainWindow):
         self._capture_region: Optional[CaptureRegion] = None
         self._target_window: Optional[WindowInfo] = None
         self._is_watching: bool = False
+        self._closing = False
+        self._retired_watch_workers = []
+        self._ocr_lock = threading.Lock()
 
         # 组件（延迟初始化）
         self._ocr_engine = None
@@ -180,6 +186,15 @@ class MainWindow(QMainWindow):
         if saved_region and len(saved_region) == 4:
             l, t, w, h = saved_region
             self._capture_region = CaptureRegion(l, t, w, h)
+            title = self._cfg.get("capture", "window_title", default="")
+            relative = self._cfg.get("capture", "relative_region")
+            if title and isinstance(relative, list) and len(relative) == 4:
+                window = find_window_by_title(title)
+                if window:
+                    self._target_window = window
+                    self._capture_region.hwnd = window.hwnd
+                    (self._capture_region.rel_x, self._capture_region.rel_y,
+                     self._capture_region.rel_w, self._capture_region.rel_h) = relative
             self._update_region_label()
 
     # ─── UI 构建 ─────────────────────────────────────────────
@@ -241,6 +256,15 @@ class MainWindow(QMainWindow):
         cg_layout.addWidget(self._region_label)
         cg_layout.addLayout(window_row)
         cg_layout.addWidget(select_btn)
+        game_row = QHBoxLayout()
+        genshin_btn = QPushButton("原神对白区域")
+        genshin_btn.setToolTip("先选择原神窗口，再一键覆盖底部多行对白并启用原神适配")
+        genshin_btn.clicked.connect(self._use_genshin_region)
+        preview_btn = QPushButton("预览识别范围")
+        preview_btn.clicked.connect(self._show_capture_preview)
+        game_row.addWidget(genshin_btn)
+        game_row.addWidget(preview_btn)
+        cg_layout.addLayout(game_row)
         layout.addWidget(capture_group)
 
         # ── 识别模式 ──
@@ -249,9 +273,11 @@ class MainWindow(QMainWindow):
         self._mode_label = QLabel()
         self._provider_label = QLabel()
         self._ocr_label = QLabel()
+        self._game_label = QLabel()
         mg_layout.addRow("识别模式:", self._mode_label)
         mg_layout.addRow("AI 提供商:", self._provider_label)
         mg_layout.addRow("OCR 引擎:", self._ocr_label)
+        mg_layout.addRow("游戏适配:", self._game_label)
         layout.addWidget(mode_group)
 
         # ── 控制按钮 ──
@@ -336,7 +362,7 @@ class MainWindow(QMainWindow):
         translate_action = QAction("立即翻译", self)
         translate_action.triggered.connect(self._manual_translate)
         quit_action = QAction("退出", self)
-        quit_action.triggered.connect(QApplication.quit)
+        quit_action.triggered.connect(self.quit_app)
 
         tray_menu.addAction(show_action)
         tray_menu.addAction(show_panel_action)
@@ -373,11 +399,20 @@ class MainWindow(QMainWindow):
             self._lookup_client = create_client(lookup_profile)
 
             # 翻译协调器
+            game_profile = self._cfg.get("game", "profile", default="generic")
+            glossary = None
+            if game_profile == "genshin" and self._cfg.get("game", "genshin", "use_glossary", default=True):
+                glossary = GameGlossary.load_bundled(
+                    self._cfg.get("game", "genshin", "custom_terms", default={})
+                )
             self._translator = Translator(
                 llm_client=self._llm_client,
                 ocr_engine=self._ocr_engine,
                 translate_text_prompt=self._cfg.get("prompts", "translate_text", default=""),
                 translate_vl_prompt=self._cfg.get("prompts", "translate_vl", default=""),
+                ocr_lock=self._ocr_lock,
+                game_profile=game_profile,
+                glossary=glossary,
             )
 
             # Workers
@@ -412,25 +447,22 @@ class MainWindow(QMainWindow):
 
     def _rebuild_watch_worker(self) -> None:
         """重新构建监视 Worker"""
-        if self._watch_worker and self._watch_worker.isRunning():
-            self._watch_worker.stop()
-            self._watch_worker.wait(3000)
+        self._retire_watch_worker()
+        region = self._capture_region
+        engine = self._ocr_engine
+        adaptive = self._genshin_adaptive_enabled()
 
         def capture_fn() -> Optional[Image.Image]:
-            if self._capture_region is None:
+            if region is None:
                 return None
-            try:
-                return capture_region(self._capture_region)
-            except Exception:
-                return None
+            image = capture_region(region)
+            return prepare_genshin_dialogue(image).image if adaptive else image
 
         def quick_ocr_fn(img: Image.Image) -> str:
-            try:
-                if isinstance(self._ocr_engine, TesseractEngine):
-                    return self._ocr_engine.quick_recognize(img)
-                return self._ocr_engine.recognize(img)
-            except Exception:
-                return ""
+            # A single Paddle instance must not run inference from the manual
+            # translation thread and monitor thread at the same time.
+            with self._ocr_lock:
+                return engine.recognize(img)
 
         self._watch_worker = WatchWorker(
             capture_fn=capture_fn,
@@ -439,12 +471,115 @@ class MainWindow(QMainWindow):
             stability_count=self._cfg.get("watcher", "stability_count", default=2),
             hash_threshold=self._cfg.get("watcher", "hash_threshold", default=5),
             cooldown_seconds=self._cfg.get("watcher", "cooldown_seconds", default=0.5),
+            preset=self._cfg.get("watcher", "preset", default="auto"),
         )
         self._watch_worker.translation_needed.connect(self._on_translation_needed)
         self._watch_worker.status_changed.connect(self._on_watch_status)
         self._watch_worker.error_occurred.connect(self._on_watch_error)
 
+    def _retire_watch_worker(self) -> None:
+        worker, self._watch_worker = self._watch_worker, None
+        if worker is None:
+            return
+        if worker.isRunning():
+            self._retired_watch_workers.append(worker)
+            worker.finished.connect(lambda w=worker: self._release_watch_worker(w))
+            worker.stop()
+        else:
+            worker.deleteLater()
+
+    def _release_watch_worker(self, worker) -> None:
+        if worker in self._retired_watch_workers:
+            self._retired_watch_workers.remove(worker)
+        worker.deleteLater()
+
     # ─── 区域选择 ────────────────────────────────────────────
+    def _genshin_adaptive_enabled(self) -> bool:
+        return (self._cfg.get("game", "profile", default="generic") == "genshin"
+                and self._cfg.get("game", "genshin", "adaptive_dialogue", default=True))
+
+    def _save_capture_region(self) -> None:
+        region = self._capture_region
+        self._cfg.set("capture", "region", [region.left, region.top, region.width, region.height])
+        self._cfg.set("capture", "window_title", self._target_window.title if region.hwnd and self._target_window else "")
+        self._cfg.set("capture", "relative_region",
+                      [region.rel_x, region.rel_y, region.rel_w, region.rel_h] if region.hwnd else None)
+        self._cfg.save()
+
+    def _use_genshin_region(self) -> None:
+        title = self._window_combo.currentText()
+        window = find_window_by_title(title) if self._window_combo.currentIndex() > 0 else None
+        if window is None or window.width <= 0 or window.height <= 0:
+            QMessageBox.information(self, "选择游戏窗口", "请先在“目标窗口”中选择正在运行的原神窗口。")
+            return
+        was_watching = self._is_watching
+        if was_watching:
+            self._stop_watching()
+        elif self._translate_worker:
+            self._translate_worker.cancel_pending()
+        rx, ry, rw, rh = GENSHIN_DIALOGUE_REGION
+        self._target_window = window
+        self._capture_region = CaptureRegion(
+            window.left + int(window.width * rx), window.top + int(window.height * ry),
+            max(1, int(window.width * rw)), max(1, int(window.height * rh)),
+            hwnd=window.hwnd, rel_x=rx, rel_y=ry, rel_w=rw, rel_h=rh,
+        )
+        self._cfg.set("game", "profile", "genshin")
+        self._cfg.set("game", "genshin", "adaptive_dialogue", True)
+        self._save_capture_region()
+        self._rebuild_components()
+        self._update_region_label()
+        if was_watching:
+            self._start_watching()
+        self._status_bar.showMessage("已启用原神适配；可用“预览识别范围”确认最长对白是否完整")
+
+    def _show_capture_preview(self) -> None:
+        if self._capture_region is None:
+            QMessageBox.information(self, "预览识别范围", "请先选择捕获区域或使用“原神对白区域”。")
+            return
+        try:
+            original = capture_region(self._capture_region)
+            crop = prepare_genshin_dialogue(original) if self._genshin_adaptive_enabled() else None
+        except Exception as exc:
+            QMessageBox.warning(self, "预览失败", f"截图失败：{exc}")
+            return
+        from PIL.ImageQt import ImageQt
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("识别范围预览")
+        dialog.resize(940, 620)
+        dialog.setStyleSheet("QDialog, QWidget#capturePreview { background: #111128; } QLabel { color: #e2e8f0; }")
+        layout = QVBoxLayout(dialog)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        body = QWidget()
+        body.setObjectName("capturePreview")
+        content = QVBoxLayout(body)
+        for label, frame in (("捕获范围（应覆盖人名、称号及最长对白）", original),
+                             ("实际送入 OCR / 视觉模型的画面", crop.image if crop else original)):
+            content.addWidget(QLabel(f"{label} · {frame.width} × {frame.height}"))
+            preview = QLabel()
+            pixmap = QPixmap.fromImage(ImageQt(frame.convert("RGB")))
+            preview.setPixmap(pixmap.scaled(880, 240, Qt.AspectRatioMode.KeepAspectRatio,
+                                           Qt.TransformationMode.SmoothTransformation))
+            content.addWidget(preview)
+        detection_note = "通用模式使用完整选区。"
+        if crop:
+            detection_note = ("已识别金色人名 / 称号，保留下方完整对白。" if crop.detected
+                              else "未能可靠定位对白标题，已保留完整选区；可以手动框选或关闭动态排除。")
+        note = QLabel(detection_note +
+                      "\n如果正文已在捕获框之外，请重新框选更大的区域；无法恢复框外文字。")
+        note.setWordWrap(True)
+        content.addWidget(note)
+        content.addStretch()
+        scroll.setWidget(body)
+        layout.addWidget(scroll)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText("关闭")
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
+
     def _start_region_select(self) -> None:
         """启动区域选择浮层"""
         if self._overlay is None:
@@ -453,6 +588,7 @@ class MainWindow(QMainWindow):
             self._overlay.cancelled.connect(lambda: self._status_bar.showMessage("区域选择已取消"))
 
         # 如果有选定窗口，先将其置于前台
+        self._target_window = None
         selected_title = self._window_combo.currentText()
         if selected_title and selected_title != "（可选）先选窗口再框选":
             win = find_window_by_title(selected_title)
@@ -467,6 +603,11 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _on_region_selected(self, region: SelectedRegion) -> None:
         """区域选择完成"""
+        was_watching = self._is_watching
+        if was_watching:
+            self._stop_watching()
+        elif self._translate_worker:
+            self._translate_worker.cancel_pending()
         hwnd = None
         rel_x = rel_y = rel_w = rel_h = 0.0
 
@@ -494,14 +635,14 @@ class MainWindow(QMainWindow):
             rel_h=rel_h,
         )
 
-        # 简单保存绝对坐标供下次恢复用（实际运行时会用 hwnd 动态计算）
-        self._cfg.set("capture", "region", list(region.to_tuple()))
-        self._cfg.save()
+        self._save_capture_region()
         self._update_region_label()
         self.show()
         self._status_bar.showMessage(
             f"已选择区域: {region.left},{region.top} 大小 {region.width}×{region.height}"
         )
+        if was_watching:
+            self._start_watching()
 
     def _update_region_label(self) -> None:
         if self._capture_region:
@@ -535,6 +676,8 @@ class MainWindow(QMainWindow):
 
     # ─── 监视控制 ────────────────────────────────────────────
     def _start_watching(self) -> None:
+        if self._closing or self._is_watching:
+            return
         if self._capture_region is None:
             QMessageBox.warning(self, "提示", "请先选择捕获区域！")
             return
@@ -543,27 +686,43 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "提示", "自动监视已在设置中禁用。\n请使用快捷键或手动翻译按钮。")
             return
 
+        if self._ocr_engine is None:
+            QMessageBox.warning(
+                self, "自动监视需要本地 OCR",
+                "请在设置中配置可用的 OCR 引擎。自动监视使用本地文字检测节省 API 调用；"
+                "VL 模式仍可通过“立即翻译”手动识图。",
+            )
+            return
+
         self._rebuild_watch_worker()
         self._watch_worker.start()
         self._is_watching = True
         self._start_btn.setEnabled(False)
         self._stop_btn.setEnabled(True)
-        self._status_bar.showMessage("监视中... 等待画面变化")
+        self._status_bar.showMessage("监视中... 正在确认文字，首次 OCR 加载可能稍慢")
 
     def _stop_watching(self) -> None:
-        if self._watch_worker and self._watch_worker.isRunning():
-            self._watch_worker.stop()
-            self._watch_worker.wait(3000)
         self._is_watching = False
+        self._retire_watch_worker()
+        if self._translate_worker:
+            self._translate_worker.cancel_pending()
         self._start_btn.setEnabled(True)
         self._stop_btn.setEnabled(False)
         self._status_bar.showMessage("已停止监视")
 
     # ─── 翻译触发 ────────────────────────────────────────────
+    @Slot()
     def _manual_translate(self) -> None:
         """手动立即翻译"""
+        if self._closing:
+            return
         if self._capture_region is None:
             QMessageBox.warning(self, "提示", "请先选择捕获区域！")
+            return
+
+        if (self._is_watching and self._watch_worker
+                and self._cfg.get("recognition_mode", default="ocr") != "vl"):
+            self._watch_worker.force_trigger()
             return
 
         # 将目标窗口带到前台，以防被遮挡导致截取到桌面
@@ -575,29 +734,28 @@ class MainWindow(QMainWindow):
 
         try:
             img = capture_region(self._capture_region)
+            if self._genshin_adaptive_enabled():
+                img = prepare_genshin_dialogue(img).image
             self._trigger_translation(img)
         except Exception as e:
             self._status_bar.showMessage(f"截图失败: {e}")
 
     def _hotkey_callback(self) -> None:
         """快捷键回调（在 keyboard 线程中调用，通过 Qt 信号转发）"""
-        if self._is_watching and self._watch_worker:
-            self._watch_worker.force_trigger()
-        else:
-            # 用 invokeMethod 安全地调用 Qt 主线程方法
-            from PySide6.QtCore import QMetaObject, Qt
-            QMetaObject.invokeMethod(self, "_manual_translate", Qt.ConnectionType.QueuedConnection)
+        from PySide6.QtCore import QMetaObject
+        QMetaObject.invokeMethod(self, "_manual_translate", Qt.ConnectionType.QueuedConnection)
 
-    @Slot(object)
-    def _on_translation_needed(self, img: Image.Image) -> None:
+    @Slot(object, str)
+    def _on_translation_needed(self, img: Image.Image, ocr_text: str) -> None:
         """WatchWorker 发出翻译信号"""
-        self._trigger_translation(img)
+        if self._is_watching and self.sender() is self._watch_worker:
+            self._trigger_translation(img, ocr_text)
 
-    def _trigger_translation(self, img: Image.Image) -> None:
+    def _trigger_translation(self, img: Image.Image, ocr_text: str | None = None) -> None:
         if self._translate_worker is None:
             return
         mode = self._cfg.get("recognition_mode", default="ocr")
-        self._translate_worker.translate(img, mode)
+        self._translate_worker.translate(img, mode, ocr_text=ocr_text)
 
     # ─── Slots: 翻译结果 ─────────────────────────────────────
     @Slot()
@@ -608,14 +766,17 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_translate_result(self, result) -> None:
-        self._status_bar.showMessage("翻译完成 ✓")
+        warning = getattr(result, "warning", "")
+        hits = getattr(result, "glossary_hits", [])
+        status = "翻译完成 ✓" + (f" · 匹配 {len(hits)} 条原神术语" if hits else "")
+        self._status_bar.showMessage(f"{status} · {warning}" if warning else status)
         if self._result_panel:
             self._result_panel.show_result(
                 corrected=result.corrected,
                 translation=result.translation,
                 original_ocr=result.original_ocr,
             )
-        if not self._result_panel.isVisible():
+        if self._result_panel and not self._result_panel.isVisible():
             self._result_panel.show()
 
     @Slot(str)
@@ -626,11 +787,15 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_watch_status(self, status: str) -> None:
-        self._status_bar.showMessage(status)
+        if self._is_watching and self.sender() is self._watch_worker and not (
+            self._translate_worker and self._translate_worker.isRunning()
+        ):
+            self._status_bar.showMessage(status)
 
     @Slot(str)
     def _on_watch_error(self, error: str) -> None:
-        self._status_bar.showMessage(f"监视错误: {error}")
+        if self._is_watching and self.sender() is self._watch_worker:
+            self._status_bar.showMessage(f"监视错误: {error}")
 
     # ─── Slots: 查词 ─────────────────────────────────────────
     @Slot(str, str)
@@ -642,8 +807,8 @@ class MainWindow(QMainWindow):
         # 立即显示加载状态（使用 QCursor.pos() 获取全局鼠标位置）
         from PySide6.QtGui import QCursor
         cursor_pos = QCursor.pos()
-        self._word_tooltip.show_result(
-            {"word": selected_text, "meaning": "查询中...", "part_of_speech": "", "note": ""},
+        self._word_tooltip.show_loading(
+            selected_text,
             pos=QPoint(cursor_pos.x() + 15, cursor_pos.y() + 15)
         )
 
@@ -658,12 +823,7 @@ class MainWindow(QMainWindow):
     @Slot(dict)
     def _on_lookup_result(self, data: dict) -> None:
         if self._word_tooltip:
-            from PySide6.QtGui import QCursor
-            cursor_pos = QCursor.pos()
-            self._word_tooltip.show_result(
-                data,
-                pos=QPoint(cursor_pos.x() + 15, cursor_pos.y() + 15)
-            )
+            self._word_tooltip.show_result(data)
 
     @Slot(str)
     def _on_lookup_error(self, error: str) -> None:
@@ -672,7 +832,7 @@ class MainWindow(QMainWindow):
 
     # ─── 单词本管理 ──────────────────────────────────────────
     def _export_vocab(self) -> None:
-        from src.utils.vocabulary import get_all_words, clear_vocab
+        from src.utils.vocabulary import get_all_words
         words = get_all_words()
         if not words:
             QMessageBox.information(self, "导出单词本", "当前收藏夹为空！没有可以导出的单词。")
@@ -686,8 +846,7 @@ class MainWindow(QMainWindow):
                 with open(file_path, "w", encoding="utf-8") as f:
                     for w in words:
                         f.write(f"{w}\n")
-                clear_vocab()
-                QMessageBox.information(self, "导出成功", f"成功导出 {len(words)} 个单词！\n已清空当前收藏夹。")
+                QMessageBox.information(self, "导出成功", f"成功导出 {len(words)} 个单词！\n收藏夹中的单词已保留。")
             except Exception as e:
                 QMessageBox.critical(self, "导出失败", f"导出时发生错误:\n{e}")
 
@@ -727,6 +886,15 @@ class MainWindow(QMainWindow):
 
         self._provider_label.setText(display_str)
         self._ocr_label.setText(ocr_engine.capitalize())
+        game_label = "通用"
+        if self._cfg.get("game", "profile", default="generic") == "genshin":
+            features = ["原神"]
+            if self._genshin_adaptive_enabled():
+                features.append("动态对白")
+            if self._cfg.get("game", "genshin", "use_glossary", default=True):
+                features.append("本地术语")
+            game_label = " · ".join(features)
+        self._game_label.setText(game_label)
         self._hotkey_hint_label.setText(
             f"快捷键: {self._cfg.get('hotkey', default='ctrl+shift+t').upper()} 立即翻译"
         )
@@ -751,13 +919,19 @@ class MainWindow(QMainWindow):
 
     # ─── 关闭事件 ────────────────────────────────────────────
     def closeEvent(self, event) -> None:
-        """关闭主窗口时彻底退出程序"""
+        """Wait asynchronously for in-flight work before destroying QThreads."""
+        event.ignore()
         self.quit_app()
-        event.accept()
 
     def quit_app(self) -> None:
         """完全退出程序并释放资源"""
+        if self._closing:
+            return
+        self._closing = True
         self._stop_watching()
+        for worker in (self._translate_worker, self._lookup_worker):
+            if worker:
+                worker.cancel_pending()
         self._hotkey_mgr.unregister_all()
         if hasattr(self, "_tray") and self._tray:
             self._tray.hide()
@@ -765,4 +939,13 @@ class MainWindow(QMainWindow):
             self._result_panel.close()
         if self._word_tooltip:
             self._word_tooltip.close()
+        self.setEnabled(False)
+        self._status_bar.showMessage("正在退出，等待后台任务结束...")
+        self._finish_quit()
+
+    def _finish_quit(self) -> None:
+        workers = [self._translate_worker, self._lookup_worker, *self._retired_watch_workers]
+        if any(worker is not None and worker.isRunning() for worker in workers):
+            QTimer.singleShot(100, self._finish_quit)
+            return
         QApplication.quit()

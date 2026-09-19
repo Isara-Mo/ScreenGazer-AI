@@ -52,6 +52,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # 识别模式: ocr(OCR+文本LLM) | vl(VL大模型直接识别)
     "recognition_mode": "ocr",
 
+    "game": {
+        "profile": "generic",       # generic | genshin
+        "genshin": {
+            "adaptive_dialogue": True,
+            "use_glossary": True,
+            "custom_terms": {},     # English name -> 中文译名
+        },
+    },
+
     "ocr": {
         "engine": "paddleocr",                             # tesseract | paddleocr
         "tesseract_path": "E:/Tool/Tesseract/tesseract.exe",
@@ -88,15 +97,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "mode": "window_region",    # window_region | absolute
         "window_title": "",
         "region": None,             # [x, y, w, h] 相对窗口坐标或绝对坐标
+        "relative_region": None,    # [x, y, w, h] 窗口宽高比例，适应窗口缩放
     },
 
     "hotkey": "ctrl+shift+t",
 
     "watcher": {
         "enabled": True,
-        "poll_interval": 0.3,       # 轮询间隔（秒）
-        "stability_count": 2,       # 字数稳定所需连续次数
-        "hash_threshold": 8,        # 图像哈希差异阈值（0-64）
+        "preset": "auto",          # auto | fast | stable | custom
+        "poll_interval": 0.3,       # 手动模式下的基础 OCR 间隔（秒）
+        "stability_count": 2,       # 手动模式下文本稳定所需连续次数
+        "hash_threshold": 8,        # 帧变化加速提示的图像哈希差异阈值（1-64）
+        "cooldown_seconds": 0.5,    # 自动翻译触发的最短间隔（秒）
     },
 
     "ui": {
@@ -110,6 +122,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "opacity": 0.95,
         "font_size_en": 13,
         "font_size_zh": 14,
+        "word_tooltip_geometry": None,
+        "word_tooltip_font_size": 14,
+        "word_tooltip_pinned": False,
+        "word_tooltip_always_on_top": True,
     },
 }
 
