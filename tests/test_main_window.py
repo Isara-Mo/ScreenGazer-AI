@@ -183,7 +183,7 @@ class MainWindowIntegrationTests(unittest.TestCase):
         ) as translate:
             worker.translation_needed.emit(image, "exact cached text")
             self.wait_until(lambda: self.panel.show_result.called)
-            translate.assert_called_once_with(image, "ocr", ocr_text="exact cached text")
+            translate.assert_called_once_with(image, "ocr", ocr_text="exact cached text", automatic=True)
 
         self.assertEqual(self.ocr.images, [])
         self.assertEqual(self.client.messages, [[{"role": "user", "content": "exact cached text"}]])

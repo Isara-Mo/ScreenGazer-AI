@@ -925,7 +925,7 @@ class MainWindow(QMainWindow):
             "ocr_mode": "unused" if mode == "vl" else ("reused" if ocr_text is not None else "request"),
             "only_choices": bool((scene and not scene.dialogue) or (parts and parts.dialogue is None)),
         }
-        self._translate_worker.translate(img, mode, ocr_text=ocr_text)
+        self._translate_worker.translate(img, mode, ocr_text=ocr_text, automatic=automatic)
 
     @Slot(object)
     def _on_watch_observation(self, observation) -> None:
@@ -1047,6 +1047,9 @@ class MainWindow(QMainWindow):
         hits = getattr(result, "glossary_hits", [])
         error = getattr(result, "error", "")
         status = (f"翻译失败，保留识别原文：{error}" if error else "翻译完成 ✓")
+        reuse = getattr(result, "timings", {})
+        if not error and (reuse.get("cache_hit") or reuse.get("joined_request")):
+            status = "已复用同句翻译 · 未新增模型请求"
         status += f" · 匹配 {len(hits)} 条原神术语" if hits else ""
         self._status_bar.showMessage(f"{status} · {warning}" if warning else status)
         display_started = time.monotonic()

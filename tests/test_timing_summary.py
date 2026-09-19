@@ -81,6 +81,26 @@ class TimingSummaryTests(unittest.TestCase):
         self.assertNotIn("确认文字", result)
         self.assertNotIn("复用监视识别", result)
 
+    def test_cached_result_reports_no_new_model_request(self):
+        result = format_timing_summary(
+            {"cache_hit": 1.0, "model": 0.0, "total": 0.0},
+            monitor=monitor(), total_seconds=1.1,
+        )
+        self.assertIn("本次模型请求 0 次 · 模型 0.00s", result)
+        self.assertIn("其他处理/显示 0.10s", result)
+        self.assertIn("请求合计 0.00s", result)
+
+    def test_joined_request_separates_original_duration_from_current_wait(self):
+        result = format_timing_summary(
+            {"joined_request": 1.0, "reuse_wait": 2.0, "total": 2.0,
+             "original_model": 7.0, "original_refinement": 1.0},
+            monitor=monitor(), total_seconds=3.1,
+        )
+        self.assertIn("复用进行中的请求：等待 2.00s（未新增请求）", result)
+        self.assertIn("原请求模型 7.00s · 术语校正 1.00s", result)
+        self.assertIn("其他处理/显示 0.10s", result)
+        self.assertEqual(len(result.splitlines()), 6)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -40,6 +40,7 @@ def format_timing_summary(
     model = _seconds(timings.get("model"))
     refinement = _seconds(timings.get("refinement"))
     queue = _seconds(timings.get("queue"))
+    reuse_wait = _seconds(timings.get("reuse_wait"))
     held = _seconds(held_seconds)
     display = _seconds(display_seconds)
     monitor_total = 0.0
@@ -75,15 +76,20 @@ def format_timing_summary(
         ocr_label = "请求 OCR：未使用"
     else:
         ocr_label = f"请求 OCR {ocr:.2f}s"
-    lines.append(f"排队 {queue:.2f}s · {ocr_label} · 模型 {model:.2f}s")
+    if timings.get("cache_hit"):
+        lines.append("命中同句缓存 · 本次模型请求 0 次 · 模型 0.00s")
+    elif timings.get("joined_request"):
+        lines.append(f"复用进行中的请求：等待 {reuse_wait:.2f}s（未新增请求）")
+    else:
+        lines.append(f"排队 {queue:.2f}s · {ocr_label} · 模型 {model:.2f}s")
 
     if total_seconds is not None:
         # The residual includes request preparation, parsing, GUI delivery and
         # rendering, plus manual capture when no monitor telemetry is present.
         other = max(0.0, _seconds(total_seconds) - monitor_total - queue
-                    - ocr - model - refinement - held)
+                    - ocr - model - refinement - held - reuse_wait)
     else:
-        other = max(0.0, request_total - ocr - model - refinement) + display
+        other = max(0.0, request_total - ocr - model - refinement - reuse_wait) + display
     final_stages = []
     if refinement:
         final_stages.append(f"术语校正 {refinement:.2f}s")
@@ -91,5 +97,12 @@ def format_timing_summary(
     if held:
         final_stages.append(f"等待对白恢复 {held:.2f}s")
     lines.append(" · ".join(final_stages))
-    lines.append(f"请求合计 {request_total:.2f}s（不含监视/排队）")
+    if timings.get("joined_request"):
+        lines.append(
+            f"原请求模型 {_seconds(timings.get('original_model')):.2f}s · "
+            f"术语校正 {_seconds(timings.get('original_refinement')):.2f}s"
+            "（跨越本轮检测，不另加）"
+        )
+    else:
+        lines.append(f"请求合计 {request_total:.2f}s（不含监视/排队）")
     return "\n".join(lines)

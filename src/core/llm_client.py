@@ -187,7 +187,7 @@ class DashScopeClient(LLMClient):
         return "DashScope"
 
     def chat(self, messages: list[dict]) -> str:
-        """文本对话，使用 Generation API，失败时回退至 MultiModal API"""
+        """文本对话；接口不兼容时最多回退一次 MultiModal API。"""
         try:
             call_kwargs = {
                 "api_key": self._ds.api_key,
@@ -201,10 +201,6 @@ class DashScopeClient(LLMClient):
                 call_kwargs["enable_thinking"] = False
 
             response = self._ds.Generation.call(**call_kwargs)
-            # 专有云/私有空间部署的 VL 大模型，对 Generation 接口可能返回 400 url error
-            if response.status_code == 400 and ("url error" in str(response.message).lower() or "check url" in str(response.message).lower()):
-                return self._chat_via_multimodal(messages)
-
             if response.status_code != 200:
                 raise RuntimeError(
                     f"DashScope 请求失败 [{response.status_code}]: {response.message}"
@@ -216,12 +212,10 @@ class DashScopeClient(LLMClient):
                 return "".join(parts)
             return str(content)
         except Exception as e:
-            # 如果因为网络或 URL 错误报错，也尝试使用多模态接口
+            # 将回退放在唯一出口。回退自身的 400 错误不能再触发一次相同请求。
+            # 专有云/私有空间部署的 VL 模型可能不支持 Generation 接口。
             if "url error" in str(e).lower() or "400" in str(e):
-                try:
-                    return self._chat_via_multimodal(messages)
-                except Exception:
-                    pass
+                return self._chat_via_multimodal(messages)
             raise
 
     def _chat_via_multimodal(self, messages: list[dict]) -> str:

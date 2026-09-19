@@ -55,6 +55,42 @@ class ObservationIntegrationTests(unittest.TestCase):
         self.panel.show_result.assert_not_called()
         self.assertIsNotNone(self.window._deferred_translation)
 
+    def test_stable_a_b_a_restores_display_without_repeating_model_call(self):
+        self.attach_monitor()
+        for count, text in enumerate(("Dialogue A.", "Dialogue B.", "Dialogue A.",
+                                       "Dialogue B.", "Dialogue A."), 1):
+            self.submit(text)
+            self.wait_until(lambda: self.panel.show_result.call_count == count)
+            self.assertEqual(self.panel.show_result.call_args.kwargs["corrected"], text)
+        self.assertEqual(len(self.client.messages), 2)
+        self.assertIn("本次模型请求 0 次", self.window._last_timing_label.text())
+
+    def test_cached_current_line_does_not_wait_for_obsolete_model_result(self):
+        self.attach_monitor()
+        self.submit("Dialogue A.")
+        self.wait_until(lambda: self.panel.show_result.called)
+        self.client.entered.clear()
+        self.client.block = True
+        self.submit("Dialogue B.")
+        self.wait_until(self.client.entered.is_set)
+        self.submit("Dialogue A.")
+        self.assertEqual(self.panel.show_result.call_count, 2)
+        self.assertEqual(self.panel.show_result.call_args.kwargs["corrected"], "Dialogue A.")
+        self.assertTrue(self.window._translate_worker._busy)
+        self.client.release.set()
+        self.wait_until(lambda: not self.window._translate_worker._busy)
+        self.assertEqual(self.panel.show_result.call_count, 2)
+        self.assertEqual(len(self.client.messages), 2)
+
+    def test_manual_watch_request_bypasses_cached_answer(self):
+        self.attach_monitor()
+        self.submit("Dialogue A.")
+        self.wait_until(lambda: self.panel.show_result.called)
+        self.submit("Dialogue A.", manual=True)
+        self.wait_until(lambda: self.panel.show_result.call_count == 2)
+        self.assertEqual(len(self.client.messages), 2)
+        self.assertNotIn("本次模型请求 0 次", self.window._last_timing_label.text())
+
     def test_old_result_is_deferred_while_new_text_is_only_a_candidate(self):
         self.defer_first_result()
         self.assertEqual(len(self.client.messages), 1)

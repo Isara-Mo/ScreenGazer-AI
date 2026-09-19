@@ -103,6 +103,23 @@ class ChoiceIntegrationTests(unittest.TestCase):
         self.cfg.set("game", "profile", "generic")
         self.assertIs(self.window._game_capture_region(), original)
 
+    def test_stably_disappearing_and_returning_choices_reuse_full_scene(self):
+        worker = self.attach_monitor()
+        raw = pack_scene_text("NPC", ["Yes", "No"])
+        response = {"corrected": "NPC", "translation": "台词", "choices": [
+            {"index": 1, "corrected": "Yes", "translation": "好"},
+            {"index": 2, "corrected": "No", "translation": "不"},
+        ]}
+        with patch.object(self.client, "chat", return_value=json.dumps(response)) as chat:
+            for i, source in enumerate((raw, "NPC", raw), 1):
+                worker.observation_changed.emit(WatchObservation("submitted", normalize_ocr_text(source)))
+                worker.translation_needed.emit(Image.new("RGB", (8, 8)), source)
+                self.wait_until(lambda: self.panel.show_result.call_count == i)
+            self.assertEqual(chat.call_count, 2)
+            restored = self.choice_panel.show_choices.call_args.args[0]
+            self.assertEqual([choice.translation for choice in restored], ["好", "不"])
+            self.assertIn("本次模型请求 0 次", self.window._last_timing_label.text())
+
     def test_choice_only_scene_does_not_open_or_clear_npc_subtitle_panels(self):
         worker = self.attach_monitor()
         raw = pack_scene_text("", ["Accept", "Decline"])
