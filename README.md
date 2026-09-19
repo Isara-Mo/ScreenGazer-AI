@@ -14,11 +14,30 @@
 - 📸 **Smart Window Binding & Occlusion-Free Capture**: Select your game window from a clean, filtered dropdown. Utilizes Windows `PrintWindow` handle capture so that other overlapping windows (like WeChat, Chrome, or translator panels) will **never obscure or interfere** with the capture.
 - 🧱 **Independent Dual Floating Panels & Subtitle Bar**: Split English corrected text and Chinese translation into independent floating windows. Drag the Chinese panel to the bottom of your screen as a customizable long subtitle bar! Includes collapsible `📄 OCR Raw` text.
 - 📖 **Direct Phrase Lookup & Word-Boundary Snapping**: Single-click any word or drag across a phrase to look up its contextual meaning (no `Ctrl` key needed!). Includes **Word-Boundary Snapping** that automatically completes incomplete head/tail words (e.g. dragging over "eat app" snaps to "eating apples").
-- 👁 **Smart Anti-Spam Auto Monitor**: Ultra-fast frame-difference hashing and intelligent text deduplication with a configurable cooldown period (default 0.5s). Completely eliminates duplicate API calls caused by background game animations or visual effects.
+- 👁 **Text-Based Auto Monitor**: Periodically checks local OCR even when backgrounds animate or screenshots appear unchanged. Confirms stable text, normalizes layout differences, and skips unchanged text before calling the API. OCR results are reused for text translation.
 - 🤖 **Multi-Model Profile Management**: Create and manage multiple AI provider profiles (DashScope, OpenAI, Ollama, DeepSeek, etc.) with independent main translation model & word lookup model selection.
 - 🧠 **3-State Thinking Mode Control**: Per-profile 3-state Thinking mode control (Default / Force Off / Force On) to balance speed and reasoning.
 - ⚡ **Full Asynchronous Non-Blocking Engine**: Multi-threaded `QThread` architecture ensures zero UI freezes during API requests, model connection testing, or OCR processing. Silenced PaddleOCR logger for a clean console.
-- 📤 **Vocab Export**: Save clicked words to an in-app vocabulary list and export to `vocab.txt`.
+- 📤 **Vocabulary Favorites**: Toggle favorites on or off, prevent duplicate entries, and export a copy without clearing your saved words.
+
+### Monitoring and lookup controls
+
+1. Select the game window, then crop just the dialogue/subtitle area where possible.
+2. In **Settings → Trigger → Auto monitoring**, leave **Auto adapt** selected. It adjusts the waiting time using local OCR cost and text idle time; it does not identify the game or learn its fonts.
+3. Choose **Fast subtitles** for rapidly replaced complete lines, or **Slow typing** if partial sentences are translated too early. **Manual tuning** reveals the original three controls and retains your values when switching presets. The image threshold is only an acceleration hint, never a prerequisite for OCR.
+4. Drag the lookup window's title bar; resize using its bottom-right corner; use **A− / A+** for text size. **Pin** keeps the window at the same position for new lookups; **On top** controls visibility above other windows. Close it with **×** or Escape. Size, font and pin/top settings are remembered.
+
+Automatic monitoring needs working local OCR in both recognition modes. Manual VL translation can still send an image when local OCR misses stylized text. OCR noise and long pauses within a typing animation can still affect detection; adjust the crop or preset in those cases. The status bar shows the current sampling wait and OCR time. Rapid translation/lookup requests retain only the newest queued request and discard superseded results; a request already sent to the provider cannot be recalled.
+
+### Genshin Impact profile
+
+Select the running game in **Target window**, click **原神对白区域** (Genshin dialogue area), then **预览识别范围** (Preview capture). This enables the Genshin profile and captures a generous lower-window area that follows the window's size. A local colour-and-layout detector removes verified gold speaker/title rows while retaining the width and lower edge for multiline dialogue. It keeps the original pixels when uncertain. If text is already outside the capture, enlarge the selection; this cannot recover uncaptured text. Menus, dialogue choices, unusual HUD layouts and faded text may need a manual selection.
+
+**Settings → 游戏适配** provides the dialogue-crop switch, glossary switch and optional `English = 中文` overrides. Generic mode retains its existing behaviour. The bundled offline glossary contains 6,454 source-backed mappings in the 2026-09-19 snapshot, including NPCs, places and organizations. It comes from the community [Genshin Dictionary open data](https://genshin-dictionary.com/en/opendata); provenance and filtering rules are recorded in `src/data/genshin_terms.SOURCES.md`.
+
+The application keeps the original English and attaches only terms matched in the current dialogue to the translation prompt. Long names take precedence, word boundaries prevent substring replacements, and ordinary meanings of words such as Amber/Will remain subject to context. This improves terminology guidance without claiming identical official dialogue or guaranteed model compliance. Lookup explanations use the same game context. Missing or outdated names can be corrected in the custom list.
+
+OCR mode still sends one translation request. VL mode uses available OCR hints on the first request; if vision reveals extra terms or misses an unambiguous expected translation, it can make **at most one additional request to the same VL model**. This also works with a VL-only configuration, at an increased latency/API cost. The local glossary is never fetched during translation. To refresh it manually, run `python scripts/update_genshin_glossary.py`, then restart the app. An offline rebuild is available via `--input path/to/words.json`.
 
 ### 💡 Recognition Modes Notice
 
@@ -67,11 +86,41 @@ uv run main.py
 - 📸 **智能窗口绑定与抗遮挡截图**: 自动过滤掉无用的系统杂项窗口，提供干净的下拉选单。绑定游戏窗口后，采用 `PrintWindow` 句柄独占截图，**完全无视**覆盖在游戏上方的其他窗口（如浏览器、微信或翻译浮窗本身）。
 - 🧱 **独立双浮窗 & 底部长条字幕框**: 支持将英文矫正原文与中文翻译拆分为独立浮窗。中文框可单独拖至屏幕底部拉成极简长条字幕框（Subtitle Bar）。内置可折叠 `📄 OCR原文` 展收查看。
 - 📖 **免 Ctrl 直划查词 & 词界自动吸附**: 鼠标单击单词或直接拖拽划选短语即可实时召唤 AI 上下文讲解（无需按 `Ctrl`）。内置 **词界自动吸附 (Word-Boundary Snapping)**，划选到残缺单词时自动补全扩展至完整词界（如划到 "eat app" 自动补全为 "eating apples"）。
-- 👁 **智能防刷屏自动监视**: 基于毫秒级图像帧差与文本去重算法，游戏对话文本静止后自动触发翻译。配合可调冷却期（默认 0.5s），彻底拦截重复 API 发包与背景动画干扰。
+- 👁 **基于文字的自动监视**: 持续检查本地 OCR，不再等待动态背景静止。连续确认文字稳定、消除换行等排版差异并去重后才调用 API；监视结果直接复用于文本翻译。
 - 🤖 **多 Profile 模型配置管理**: 轻松新建、复制与管理多个 AI 模型配置（通义千问、OpenAI、Ollama、DeepSeek 等），支持独立指定主翻译模型与查词模型。
 - 🧠 **三态 Thinking 深度思考控制**: 为每个模型独立设置 Thinking 模式（默认 / 强制关闭 / 强制开启），兼顾极速响应与复杂推理需求。
 - ⚡ **全流程异步非阻塞架构**: 全多线程 `QThread` 架构，API 请求、连接测试、OCR 推理期间界面 0 卡顿 0 冻结；静默 PaddleOCR 终端 Warning 警告，保障控制台输出干净。
-- 📤 **单词本导出**: 交互查词自动积累到收藏夹，支持一键导出为 `vocab.txt` 单词本。
+- 📤 **可取消的单词收藏**: 查词窗口点击收藏，再次点击取消；忽略大小写防止重复收藏，导出副本后保留收藏夹。
+
+### 自动监视与查词窗口的使用方法
+
+1. 先选择游戏窗口，再尽量只框选对话或字幕区域，避开其他界面文字。
+2. **设置 → 触发 → 自动监视设置** 默认选择 **自动适应**：根据本地 OCR 耗时和文字空闲时长调整等待时间，无需先调三个数值。这是检测频率的自适应，不会自动识别游戏类型或训练字体。
+3. 完整字幕切换很快时选 **快速字幕**；逐字显示的句子翻译过早时选 **慢速打字**。只有还需微调时再选 **手动微调**，原来的三个参数会保留。帧变化阈值仅提示加快检测，不再阻止周期 OCR。
+4. 查词窗顶部可拖动，右下角可调整大小；**A− / A+** 调整字体。**固定** 表示后续查词继续显示在当前位置，**置顶** 控制是否显示在其他窗口上方。窗口持续显示，直到点击 **×** 或按 Escape；大小、字体和固定/置顶状态会保存。
+5. **☆ 收藏 / ★ 已收藏** 可反复切换。导出单词本会保留已有收藏，不再自动清空。
+
+两种模式的自动监视都需要可用的本地 OCR；如果本地 OCR 无法识别艺术字体，可以使用 **立即翻译** 手动调用 VL 识图。文字识别抖动、逐字显示过程中的长停顿仍可能影响检测，优先调整选区或切换监视方案。状态栏会显示当前采样等待和 OCR 耗时，首次模型加载可能较慢。快速连续翻译或查词时只保留最新的待处理请求，并忽略过时结果；已发送给模型提供商的请求无法撤回。
+
+### 原神专用适配
+
+1. 主窗口 **目标窗口** 选择正在运行的原神，点击 **原神对白区域**。这会启用原神适配，并使用随窗口尺寸变化的底部宽选区，覆盖长短对白及可选称号。
+2. 点击 **预览识别范围**，查看捕获原图与实际识别画面。程序联合检测金色标题和白色正文，动态排除人名、称号；横向与底部不缩窄，以保留多行文字。定位不可靠时保留原图。如果预览的原图已经漏字，应手动扩大选区，无法恢复框外文字。菜单、选项、特殊界面及淡入中的文字可能需要手动框选。
+3. **设置 → 游戏适配** 可分别关闭动态裁切或术语约束，也可切回通用模式。自定义译名每行填写 `English = 中文`，例如 `Pacal = 帕加尔`；可以补充或覆盖内置译名。重复、空值或无效格式会在保存前提示所在行。
+
+本次随附 **6,454 条中英对应**（2026-09-19 快照），包括人名、NPC、地点、组织等，来自 [Genshin Dictionary 社区开放数据](https://genshin-dictionary.com/en/opendata)。例如 `Odette → 奥黛塔`、`Pacal → 帕加尔`、`Children of Echoes → 回声之子`。来源、获取时间、原始数据摘要、过滤规则和条款链接见 `src/data/genshin_terms.SOURCES.md`。这是社区整理数据，可能有缺漏或版本滞后。
+
+采用 **英文原文＋当前命中的术语约束**，不会先把英文句子改成中英混排，因此保留英文阅读和划词。匹配按完整词与长短语进行，不做近似拼写猜测；`Amber`、`Will` 等兼有普通英语含义的词会提示模型结合语境判断。查词也会使用同一游戏语境。这能加强专名一致性，但不保证复原官方整句台词，模型仍可能不遵守提示。
+
+**OCR 模式仍为一次翻译请求**。VL 模式会先利用已有 OCR 命中词；若视觉识别发现新增术语或首轮译文遗漏明确译名，最多追加 **一次同 VL 模型校正请求**，无需额外配置文本模型，但会增加耗时和 API 用量。翻译过程中只查本地词表，不联网拉取。
+
+手动更新词表（更新后重启程序）：
+
+```powershell
+python scripts/update_genshin_glossary.py
+```
+
+也支持 `--input 本地words.json路径` 离线重建；校验失败会保留旧词表。自定义译名保存在个人配置中，更新内置词表不会覆盖它们。
 
 ### 💡 识别模式特别说明
 
@@ -116,7 +165,16 @@ ScreenGazer-AI/
 ├── config.json           # 默认与用户配置文件
 └── src/
     ├── core/             # 核心逻辑（PrintWindow 截图/OCR/LLM 客户端/翻译协调/Watcher）
+    ├── data/             # 内置原神术语与来源记录
     ├── workers/          # QThread 异步任务（翻译Worker/监视Worker/查词Worker）
     ├── ui/               # PySide6 图形界面（主窗口/拆分浮窗/查词弹窗/设置对话框）
     └── utils/            # 通用工具（配置管理/全局快捷键/单词本导出）
 ```
+
+### 离线回归测试
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+测试使用临时单词本、内存配置、模拟 OCR/API 和无界面 Qt，覆盖文字监视、收藏切换、查词窗口、配置迁移、后台请求切换、原神动态裁切、词表匹配及翻译接入；不会使用个人 API Key 或修改现有单词本。
