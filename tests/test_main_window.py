@@ -90,6 +90,7 @@ class MainWindowIntegrationTests(unittest.TestCase):
         self.engines = [self.ocr]
         self.panel_signals = PanelSignals()
         self.panel = Mock()
+        self.choice_panel = Mock()
         self.panel.word_lookup_requested = self.panel_signals.word_lookup_requested
         self.panel.isVisible.return_value = True
         self.tooltip = Mock()
@@ -107,6 +108,7 @@ class MainWindowIntegrationTests(unittest.TestCase):
             patch("src.ui.main_window.capture_region", self.capture),
             patch("src.ui.main_window.list_windows", return_value=[]),
             patch("src.ui.main_window.ResultPanel", return_value=self.panel),
+            patch("src.ui.main_window.ReplyChoicesPanel", return_value=self.choice_panel),
             patch("src.ui.main_window.WordTooltipWidget", return_value=self.tooltip),
             patch.object(MainWindow, "_setup_tray", lambda window: setattr(window, "_tray", self.tray)),
             patch.object(QApplication, "quit", self.quit_mock),
@@ -247,6 +249,7 @@ class MainWindowIntegrationTests(unittest.TestCase):
         replacement = FakeOCR()
         self.engines.append(replacement)
         self.engine_factory.return_value = replacement
+        self.cfg.set("ocr", "paddleocr_lang", "ch")
         self.cfg.set("prompts", "translate_text", "new prompt: {text}")
         self.assert_nonblocking(self.window._on_config_changed)
         new = self.window._watch_worker
@@ -261,6 +264,63 @@ class MainWindowIntegrationTests(unittest.TestCase):
         self.assertEqual(len(self.ocr.images), 1)
         self.assertTrue(replacement.images)
         self.assertEqual(self.client.messages[0][0]["content"], "new prompt: region 1")
+
+    def test_monitor_and_prompt_changes_reuse_loaded_ocr_engine(self):
+        self.window._manual_translate()
+        self.wait_until(lambda: self.panel.show_result.called)
+        self.cfg.set("watcher", "preset", "fast")
+        self.cfg.set("prompts", "translate_text", "updated: {text}")
+        self.window._on_config_changed()
+        self.assertIs(self.window._ocr_engine, self.ocr)
+        self.engine_factory.assert_called_once()
+        self.panel.show_result.reset_mock()
+        self.window._manual_translate()
+        self.wait_until(lambda: self.panel.show_result.called)
+        self.assertEqual(self.client.messages[-1][0]["content"], "updated: region 1")
+
+    def test_model_wait_progress_and_completion_timings_are_visible(self):
+        self.client.block = True
+        self.window._manual_translate()
+        self.wait_until(lambda: "等待模型翻译" in self.window._status_bar.currentMessage())
+        self.assertTrue(self.window._translation_progress_timer.isActive())
+        self.panel.show_loading.assert_called_once()
+        self.client.release.set()
+        self.wait_until(lambda: self.panel.show_result.called)
+        self.assertFalse(self.window._translation_progress_timer.isActive())
+        self.assertIn("模型", self.window._last_timing_label.text())
+        self.assertIn("请求合计", self.window._last_timing_label.text())
+
+    def test_queued_request_shows_wait_and_stop_clears_progress_timer(self):
+        self.client.block = True
+        self.window._manual_translate()
+        self.wait_until(self.client.entered.is_set)
+        self.window._manual_translate()
+        self.assertIn("等待上一条请求结束", self.window._status_bar.currentMessage())
+        self.window._stop_watching()
+        self.assertFalse(self.window._translation_progress_timer.isActive())
+        self.client.release.set()
+        self.wait_until(lambda: not self.window._translate_worker._busy)
+        self.panel.show_result.assert_not_called()
+        self.assertEqual(self.window._status_bar.currentMessage(), "已停止监视")
+
+    def test_manual_translation_progress_cannot_return_after_region_or_config_change(self):
+        for change in (lambda: self.window._on_region_selected(SelectedRegion(90, 20, 30, 40)),
+                       self.window._on_config_changed):
+            with self.subTest(change=change):
+                self.client.block = True
+                self.client.release.clear()
+                self.panel.show_result.reset_mock()
+                self.window._manual_translate()
+                self.wait_until(lambda: "等待模型翻译" in self.window._status_bar.currentMessage())
+                change()
+                status = self.window._status_bar.currentMessage()
+                self.assertFalse(self.window._translation_progress_timer.isActive())
+                self.window._update_translation_progress()
+                self.assertEqual(self.window._status_bar.currentMessage(), status)
+                self.panel.clear_progress.assert_called()
+                self.client.release.set()
+                self.wait_until(lambda: not self.window._translate_worker._busy)
+                self.panel.show_result.assert_not_called()
 
     def test_lookup_signal_shows_loading_at_cursor_and_result_without_repositioning(self):
         self.client.block = True

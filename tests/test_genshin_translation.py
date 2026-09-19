@@ -121,6 +121,34 @@ class GenshinTranslationTests(unittest.TestCase):
         self.translator.translate_vl(self.image, 'Pacal is here.')
         self.assertEqual(self.client.chat_vision.call_count, 2)
 
+    def test_refinement_progress_and_time_include_the_second_call(self):
+        clock = Mock(return_value=10.0)
+        def vision(_prompt, _image):
+            clock.return_value += 3.0
+            return self.response('Pacal is here.', '帕加尔来了。')
+        self.client.chat_vision.side_effect = vision
+        progress = []
+        with patch('src.core.translator.time', Mock(perf_counter=clock)):
+            result = self.translator.translate_vl(self.image, progress_callback=progress.append)
+        self.assertEqual(progress, ['等待模型翻译', '术语校正中'])
+        self.assertEqual(result.timings, {'ocr': 0.0, 'model': 3.0, 'refinement': 3.0, 'total': 6.0})
+
+    def test_refinement_failure_keeps_first_answer_and_failed_call_duration(self):
+        clock = Mock(return_value=10.0)
+        calls = []
+        def vision(_prompt, _image):
+            calls.append(True)
+            clock.return_value += 2.0
+            if len(calls) == 2:
+                raise RuntimeError('offline')
+            return self.response('Pacal is here.', '首轮译文')
+        self.client.chat_vision.side_effect = vision
+        with patch('src.core.translator.time', Mock(perf_counter=clock)):
+            result = self.translator.translate_vl(self.image)
+        self.assertTrue(result.success)
+        self.assertEqual(result.translation, '首轮译文')
+        self.assertEqual(result.timings, {'ocr': 0.0, 'model': 2.0, 'refinement': 2.0, 'total': 4.0})
+
     def test_lookup_uses_term_meanings_and_preserves_selected_english(self):
         self.client.chat.return_value = json.dumps({'word': 'Pacal', 'meaning': '帕加尔'})
         data = self.translator.lookup_word('Pacal', 'Pacal leads the Children of Echoes.', prompt_template='{selected} | {context}')

@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from tests import test_main_window as fixture
+from tests.test_game_capture import dialogue, exploration_hud
 from PIL import Image
 from PySide6.QtWidgets import QApplication
 
@@ -103,7 +104,7 @@ class GenshinIntegrationTests(unittest.TestCase):
         prepared.info["text"] = "A complete dialogue."
         with patch(
             "src.ui.main_window.prepare_genshin_dialogue",
-            return_value=SimpleNamespace(image=prepared),
+            return_value=SimpleNamespace(image=prepared, detected=True),
         ) as prepare:
             self.window._manual_translate()
             self.wait_until(lambda: self.panel.show_result.called)
@@ -126,6 +127,70 @@ class GenshinIntegrationTests(unittest.TestCase):
         self.assertTrue(all(thread is watcher for thread in self.ocr.threads))
         self.assertEqual(self.panel.show_result.call_args.kwargs["original_ocr"], "A complete dialogue.")
         self.assertEqual(len(self.client.messages), 2)
+
+    def check_automatic_dialogue_gate(self, mode):
+        self.cfg.set("recognition_mode", mode)
+        self.enable_adaptive()
+        hud = exploration_hud()
+        initial, _, _ = dialogue(title=True, lines=2)
+        initial.info["text"] = "We shall meet again in Liyue."
+        following = initial.copy()
+        following.info["text"] = "I have 19091 / 20706 coins at Lv. 90."
+        frame = {"image": hud}
+        self.capture.side_effect = lambda region: frame["image"]
+        self.window._start_watching()
+        self.wait_until(lambda: self.capture.call_count >= 3)
+        self.assertEqual(self.window._watch_observation.kind, "unavailable")
+        self.assertEqual(self.ocr.images, [])
+        self.assertEqual(self.client.messages, [])
+        self.assertEqual(self.client.vision_images, [])
+
+        frame["image"] = initial
+        self.wait_until(lambda: self.panel.show_result.call_count == 1)
+        frame["image"] = hud
+        self.wait_until(lambda: self.window._watch_observation.kind == "unavailable")
+        samples = len(self.ocr.images)
+        captures = self.capture.call_count
+        self.wait_until(lambda: self.capture.call_count >= captures + 3)
+        self.assertEqual(len(self.ocr.images), samples)
+        self.assertEqual(self.panel.show_result.call_count, 1)
+
+        frame["image"] = following
+        self.wait_until(lambda: self.panel.show_result.call_count == 2)
+        self.window._stop_watching()
+        self.wait_until(lambda: not self.window._retired_watch_workers)
+        # Legitimate dialogue mentioning levels or health-like fractions survives.
+        self.assertEqual(self.ocr.images[-1].info["text"], following.info["text"])
+        if mode == "ocr":
+            self.assertEqual(self.panel.show_result.call_args.kwargs["original_ocr"],
+                             following.info["text"])
+        self.assertTrue(all(image.size != hud.size for image in self.ocr.images))
+        self.assertEqual(len(self.client.messages), 2 if mode == "ocr" else 0)
+        self.assertEqual(len(self.client.vision_images), 2 if mode == "vl" else 0)
+        self.cfg.save.assert_not_called()
+
+    def test_ocr_monitor_waits_on_hud_and_resumes_after_dialogue_returns(self):
+        self.check_automatic_dialogue_gate("ocr")
+
+    def test_vision_monitor_waits_on_hud_and_resumes_after_dialogue_returns(self):
+        self.check_automatic_dialogue_gate("vl")
+
+    def test_manual_translation_during_monitoring_can_read_unconfirmed_frame(self):
+        self.enable_adaptive()
+        hud = exploration_hud()
+        self.capture.side_effect = lambda region: hud
+        self.window._start_watching()
+        watcher = self.window._watch_worker
+        self.wait_until(lambda: "等待原神对白" in self.window._status_bar.currentMessage())
+        self.window._manual_translate()
+        self.wait_until(lambda: self.panel.show_result.called)
+        self.window._stop_watching()
+        self.wait_until(lambda: not self.window._retired_watch_workers)
+        self.assertEqual(len(self.ocr.images), 1)
+        self.assertEqual(self.ocr.images[0].tobytes(), hud.tobytes())
+        self.assertIs(self.ocr.threads[0], watcher)
+        self.assertEqual(len(self.client.messages), 1)
+        self.assertEqual(self.panel.show_result.call_args.kwargs["original_ocr"], hud.info["text"])
 
     def test_disabling_adaptation_bypasses_crop_in_both_paths(self):
         self.enable_adaptive()

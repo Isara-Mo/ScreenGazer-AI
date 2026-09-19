@@ -8,13 +8,14 @@ from typing import Callable, Optional
 from PIL import Image
 from PySide6.QtCore import QThread, Signal
 
-from src.core.watcher import ChangeWatcher
+from src.core.watcher import ChangeWatcher, WatchObservation
 
 
 class WatchWorker(QThread):
     """Own all watcher operations on the worker thread, including manual OCR."""
 
     translation_needed = Signal(object, str)
+    observation_changed = Signal(object)
     status_changed = Signal(str)
     error_occurred = Signal(str)
 
@@ -28,9 +29,14 @@ class WatchWorker(QThread):
         cooldown_seconds: float = 0.5,
         parent=None,
         preset: str = "auto",
+        *,
+        manual_capture_fn: Callable[[], Optional[Image.Image]] | None = None,
+        empty_capture_status: str = "未配置捕获区域",
     ) -> None:
         super().__init__(parent)
         self._capture_fn = capture_fn
+        self._manual_capture_fn = manual_capture_fn
+        self._empty_capture_status = empty_capture_status
         self._quick_ocr_fn = quick_ocr_fn
         self._settings = {
             "poll_interval": poll_interval, "stability_count": stability_count,
@@ -58,9 +64,21 @@ class WatchWorker(QThread):
             if not self._stop_event.is_set():
                 self.translation_needed.emit(image, text)
 
+        def on_progress(message: str) -> None:
+            if not self._stop_event.is_set():
+                self.status_changed.emit(message)
+
+        def on_observation(observation: WatchObservation) -> None:
+            if not self._stop_event.is_set():
+                self.observation_changed.emit(observation)
+
         self._watcher = ChangeWatcher(
             capture_fn=self._capture_fn,
+            manual_capture_fn=self._manual_capture_fn,
+            empty_capture_status=self._empty_capture_status,
             quick_ocr_fn=self._quick_ocr_fn,
+            progress_callback=on_progress,
+            observation_callback=on_observation,
             on_stable=on_stable,
             cooldown_seconds=self._cooldown_seconds,
             **self._settings,

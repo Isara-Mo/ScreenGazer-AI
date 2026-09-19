@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Optional
 import threading
+import time
 
 from PIL import Image
 from PySide6.QtCore import Qt, QTimer, Slot, QPoint
@@ -24,17 +25,22 @@ from src.utils.hotkey_manager import HotkeyManager
 from src.core.capture import (
     CaptureRegion, capture_region, find_window_by_title,
     list_windows, WindowInfo,
+    get_window_info,
 )
 from src.core.ocr_engine import create_engine
 from src.core.llm_client import create_client
 from src.core.translator import Translator
-from src.core.game_capture import GENSHIN_DIALOGUE_REGION, prepare_genshin_dialogue
+from src.core.game_capture import GENSHIN_DIALOGUE_REGION, prepare_genshin_dialogue, detect_genshin_choices
+from src.core.dialogue_content import prepare_scene_image, recognize_scene, unpack_scene_text, scene_image_parts
 from src.core.glossary import GameGlossary
+from src.core.watcher import WatchTiming, normalize_ocr_text
+from src.core.timing_summary import format_timing_summary
 from src.workers.watch_worker import WatchWorker
 from src.workers.translate_worker import TranslateWorker
 from src.workers.word_lookup_worker import WordLookupWorker
 from src.ui.overlay import RegionSelectorOverlay, SelectedRegion
 from src.ui.result_panel import ResultPanel
+from src.ui.choice_panel import ReplyChoicesPanel
 from src.ui.word_tooltip import WordTooltipWidget
 from src.ui.config_dialog import ConfigDialog
 
@@ -105,7 +111,7 @@ QPushButton#selectBtn {
 }
 QStatusBar {
     background-color: #060612;
-    color: #4b5563;
+    color: #94a3b8;
     font-size: 11px;
     border-top: 1px solid #1e1e3a;
 }
@@ -159,6 +165,7 @@ class MainWindow(QMainWindow):
 
         # 组件（延迟初始化）
         self._ocr_engine = None
+        self._ocr_engine_config = None
         self._llm_client = None
         self._translator: Optional[Translator] = None
         self._watch_worker: Optional[WatchWorker] = None
@@ -169,11 +176,34 @@ class MainWindow(QMainWindow):
         # UI 组件
         self._overlay: Optional[RegionSelectorOverlay] = None
         self._result_panel: Optional[ResultPanel] = None
+        self._choice_panel: Optional[ReplyChoicesPanel] = None
+        self._last_reply_choices = []
+        self._last_reply_choice_texts = ()
+        self._choice_hide_timer = QTimer(self)
+        self._choice_hide_timer.setSingleShot(True)
+        self._choice_hide_timer.setInterval(600)
+        self._choice_hide_timer.timeout.connect(self._suspend_reply_choices)
         self._word_tooltip: Optional[WordTooltipWidget] = None
+        self._translation_stage = ""
+        self._translation_stage_started = 0.0
+        self._watch_observation = None
+        self._watch_submission = None
+        self._translation_source = None
+        self._deferred_translation = None
+        self._translation_timing = None
+        self._translation_received_at = None
+        self._translation_progress_timer = QTimer(self)
+        self._translation_progress_timer.setInterval(1000)
+        self._translation_progress_timer.timeout.connect(self._update_translation_progress)
+        self._pending_watch_status = None
+        self._last_watch_status_at = float("-inf")
+        self._watch_status_timer = QTimer(self)
+        self._watch_status_timer.setSingleShot(True)
+        self._watch_status_timer.timeout.connect(self._flush_watch_status)
 
         self.setWindowTitle("VN 翻译助手")
-        self.setMinimumSize(400, 520)
-        self.resize(440, 560)
+        self.setMinimumSize(440, 660)
+        self.resize(480, 700)
         self.setStyleSheet(MAIN_STYLE)
 
         self._setup_ui()
@@ -329,6 +359,19 @@ class MainWindow(QMainWindow):
         ctrl_layout.addWidget(hotkey_hint)
         layout.addWidget(ctrl_group)
 
+        self._last_timing_label = QLabel("最近翻译耗时：完成一次翻译后显示各阶段汇总")
+        self._last_timing_label.setWordWrap(True)
+        self._last_timing_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._last_timing_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._last_timing_label.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        self._last_timing_label.setToolTip(
+            "从首次检测到新文字的那轮截图开始计时；手动翻译从开始处理该次采集时计时。\n"
+            "无法测量游戏实际出字到首次采样之间的延迟。文字确认包含多轮截图、OCR 和等待，不能重复相加。\n"
+            "监视中手动翻译不包含按下按钮后等待前一轮 OCR 完成的时间。\n"
+            "界面更新指写入浮窗文本，不包含显示器呈现延迟。可选中这些文字复制。"
+        )
+        layout.addWidget(self._last_timing_label)
+
         layout.addStretch()
 
         # ── 状态栏 ──
@@ -381,14 +424,23 @@ class MainWindow(QMainWindow):
     # ─── 组件管理 ────────────────────────────────────────────
     def _rebuild_components(self) -> None:
         """根据当前配置重新构建核心组件"""
+        self._cancel_translation()
         try:
             # OCR 引擎
-            self._ocr_engine = create_engine(
+            ocr_config = (
                 self._cfg.get("ocr", "engine", default="tesseract"),
-                tesseract_path=self._cfg.get("ocr", "tesseract_path", default="tesseract"),
-                tesseract_lang=self._cfg.get("ocr", "tesseract_lang", default="eng"),
-                paddleocr_lang=self._cfg.get("ocr", "paddleocr_lang", default="en"),
+                self._cfg.get("ocr", "tesseract_path", default="tesseract"),
+                self._cfg.get("ocr", "tesseract_lang", default="eng"),
+                self._cfg.get("ocr", "paddleocr_lang", default="en"),
             )
+            # Changing the region, game or monitoring preset does not require
+            # loading Paddle's models again. Retired workers share the OCR lock.
+            if self._ocr_engine is None or ocr_config != self._ocr_engine_config:
+                self._ocr_engine = create_engine(
+                    ocr_config[0], tesseract_path=ocr_config[1],
+                    tesseract_lang=ocr_config[2], paddleocr_lang=ocr_config[3],
+                )
+                self._ocr_engine_config = ocr_config
 
             # 主 LLM 客户端
             active_profile = self._cfg.get_active_model_profile()
@@ -423,6 +475,8 @@ class MainWindow(QMainWindow):
                 self._translate_worker.result_ready.connect(self._on_translate_result)
                 self._translate_worker.error_occurred.connect(self._on_translate_error)
                 self._translate_worker.started_working.connect(self._on_translate_start)
+                self._translate_worker.progress_changed.connect(self._on_translate_progress)
+                self._translate_worker.queued.connect(self._on_translate_queued)
 
             if self._lookup_worker:
                 self._lookup_worker.update_translator(self._translator)
@@ -448,24 +502,29 @@ class MainWindow(QMainWindow):
     def _rebuild_watch_worker(self) -> None:
         """重新构建监视 Worker"""
         self._retire_watch_worker()
-        region = self._capture_region
+        region = self._game_capture_region()
         engine = self._ocr_engine
         adaptive = self._genshin_adaptive_enabled()
 
-        def capture_fn() -> Optional[Image.Image]:
+        def capture_fn(require_dialogue: bool = True) -> Optional[Image.Image]:
             if region is None:
                 return None
             image = capture_region(region)
-            return prepare_genshin_dialogue(image).image if adaptive else image
+            if not adaptive:
+                return image
+            return self._prepare_genshin_scene(image, require_dialogue=require_dialogue)
 
         def quick_ocr_fn(img: Image.Image) -> str:
             # A single Paddle instance must not run inference from the manual
             # translation thread and monitor thread at the same time.
             with self._ocr_lock:
-                return engine.recognize(img)
+                return recognize_scene(img, engine.recognize)
 
         self._watch_worker = WatchWorker(
             capture_fn=capture_fn,
+            manual_capture_fn=lambda: capture_fn(require_dialogue=False),
+            empty_capture_status=("等待原神对白（未确认对白，已暂停自动识别）"
+                                  if adaptive else "未配置捕获区域"),
             quick_ocr_fn=quick_ocr_fn,
             poll_interval=self._cfg.get("watcher", "poll_interval", default=0.3),
             stability_count=self._cfg.get("watcher", "stability_count", default=2),
@@ -474,6 +533,7 @@ class MainWindow(QMainWindow):
             preset=self._cfg.get("watcher", "preset", default="auto"),
         )
         self._watch_worker.translation_needed.connect(self._on_translation_needed)
+        self._watch_worker.observation_changed.connect(self._on_watch_observation)
         self._watch_worker.status_changed.connect(self._on_watch_status)
         self._watch_worker.error_occurred.connect(self._on_watch_error)
 
@@ -498,6 +558,36 @@ class MainWindow(QMainWindow):
         return (self._cfg.get("game", "profile", default="generic") == "genshin"
                 and self._cfg.get("game", "genshin", "adaptive_dialogue", default=True))
 
+    def _game_capture_region(self):
+        """Include reply choices inside the bound game window, without changing saved selections."""
+        region = self._capture_region
+        if (region is None or not self._genshin_adaptive_enabled() or not region.hwnd
+                or region.rel_w <= 0 or region.rel_h <= 0):
+            return region
+        window = get_window_info(region.hwnd)
+        if window is None or window.width <= 0 or window.height <= 0:
+            return region
+        x, y, w, h = GENSHIN_DIALOGUE_REGION
+        left, top = max(0.0, min(region.rel_x, x)), max(0.0, min(region.rel_y, y))
+        right = min(1.0, max(region.rel_x + region.rel_w, x + w))
+        bottom = min(1.0, max(region.rel_y + region.rel_h, y + h))
+        return CaptureRegion(
+            window.left + int(left * window.width), window.top + int(top * window.height),
+            max(1, int((right - left) * window.width)), max(1, int((bottom - top) * window.height)),
+            hwnd=region.hwnd, rel_x=left, rel_y=top, rel_w=right - left, rel_h=bottom - top,
+        )
+
+    @staticmethod
+    def _prepare_genshin_scene(image, *, require_dialogue=True):
+        crop = prepare_genshin_dialogue(image)
+        choices = detect_genshin_choices(image)
+        if choices:
+            return prepare_scene_image(crop.image if crop.detected else None,
+                                       [choice.image for choice in choices])
+        if require_dialogue and not crop.detected:
+            return None
+        return crop.image
+
     def _save_capture_region(self) -> None:
         region = self._capture_region
         self._cfg.set("capture", "region", [region.left, region.top, region.width, region.height])
@@ -516,7 +606,7 @@ class MainWindow(QMainWindow):
         if was_watching:
             self._stop_watching()
         elif self._translate_worker:
-            self._translate_worker.cancel_pending()
+            self._cancel_translation()
         rx, ry, rw, rh = GENSHIN_DIALOGUE_REGION
         self._target_window = window
         self._capture_region = CaptureRegion(
@@ -538,8 +628,13 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "预览识别范围", "请先选择捕获区域或使用“原神对白区域”。")
             return
         try:
-            original = capture_region(self._capture_region)
+            original = capture_region(self._game_capture_region())
             crop = prepare_genshin_dialogue(original) if self._genshin_adaptive_enabled() else None
+            choices = detect_genshin_choices(original) if crop else ()
+            processed = (prepare_scene_image(crop.image if crop.detected else None,
+                                             [choice.image for choice in choices])
+                         if choices else crop.image if crop else original)
+            detected = bool(crop and (crop.detected or choices))
         except Exception as exc:
             QMessageBox.warning(self, "预览失败", f"截图失败：{exc}")
             return
@@ -555,8 +650,19 @@ class MainWindow(QMainWindow):
         body = QWidget()
         body.setObjectName("capturePreview")
         content = QVBoxLayout(body)
-        for label, frame in (("捕获范围（应覆盖人名、称号及最长对白）", original),
-                             ("实际送入 OCR / 视觉模型的画面", crop.image if crop else original)):
+        if crop:
+            confirmation = QLabel(f"已确认对白 / 回复选项（{len(choices)} 条），可进入自动识别" if detected
+                                  else "当前画面未通过对白判断，自动翻译正在等待")
+            confirmation.setWordWrap(True)
+            confirmation.setStyleSheet(
+                "color: #4ade80; font-weight: bold;" if detected
+                else "color: #fbbf24; font-weight: bold;"
+            )
+            content.addWidget(confirmation)
+        processed_label = ("手动翻译画面（自动监视正在等待对白）"
+                           if crop and not detected else "实际识别的对白与选项（分块处理）")
+        for label, frame in (("捕获范围（应覆盖人名、称号、最长对白及右侧选项）", original),
+                             (processed_label, processed)):
             content.addWidget(QLabel(f"{label} · {frame.width} × {frame.height}"))
             preview = QLabel()
             pixmap = QPixmap.fromImage(ImageQt(frame.convert("RGB")))
@@ -566,15 +672,31 @@ class MainWindow(QMainWindow):
         detection_note = "通用模式使用完整选区。"
         if crop:
             detection_note = ("已识别金色人名 / 称号，保留下方完整对白。" if crop.detected
-                              else "未能可靠定位对白标题，已保留完整选区；可以手动框选或关闭动态排除。")
+                              else "未确认原神对白：自动监视暂停 OCR 和翻译，避免识别血条、等级和按键；"
+                                   "对白出现后自动恢复。手动翻译仍可识别完整选区。")
+            if choices:
+                detection_note = f"已提取 {len(choices)} 条回复选项，按从上到下编号，与角色台词分开识别和显示。"
         note = QLabel(detection_note +
-                      "\n如果正文已在捕获框之外，请重新框选更大的区域；无法恢复框外文字。")
+                      "\n绑定原神窗口时会自动补足右侧选项范围；未绑定窗口时请把选项一起框入选区。"
+                      "\n预览是打开时的截图。漏识别时可保存捕获原图，保留检测所需的完整像素。")
         note.setWordWrap(True)
         content.addWidget(note)
         content.addStretch()
         scroll.setWidget(body)
         layout.addWidget(scroll)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        save_button = buttons.addButton("保存捕获原图", QDialogButtonBox.ButtonRole.ActionRole)
+        save_button.setToolTip("保存本次未经预览缩放的捕获图，便于核对漏识别原因")
+
+        def save_capture() -> None:
+            path, _ = QFileDialog.getSaveFileName(dialog, "保存捕获原图", "capture-original.png", "PNG 图片 (*.png)")
+            if path:
+                try:
+                    original.save(path, format="PNG")
+                except Exception as exc:
+                    QMessageBox.warning(dialog, "保存失败", str(exc))
+
+        save_button.clicked.connect(save_capture)
         buttons.button(QDialogButtonBox.StandardButton.Close).setText("关闭")
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
@@ -607,7 +729,7 @@ class MainWindow(QMainWindow):
         if was_watching:
             self._stop_watching()
         elif self._translate_worker:
-            self._translate_worker.cancel_pending()
+            self._cancel_translation()
         hwnd = None
         rel_x = rel_y = rel_w = rel_h = 0.0
 
@@ -704,16 +826,37 @@ class MainWindow(QMainWindow):
     def _stop_watching(self) -> None:
         self._is_watching = False
         self._retire_watch_worker()
-        if self._translate_worker:
-            self._translate_worker.cancel_pending()
+        self._cancel_translation()
         self._start_btn.setEnabled(True)
         self._stop_btn.setEnabled(False)
         self._status_bar.showMessage("已停止监视")
 
     # ─── 翻译触发 ────────────────────────────────────────────
+    def _cancel_translation(self) -> None:
+        self._translation_progress_timer.stop()
+        self._clear_watch_status()
+        self._last_watch_status_at = float("-inf")
+        self._translation_stage = ""
+        self._watch_observation = None
+        self._watch_submission = None
+        self._translation_source = None
+        self._deferred_translation = None
+        self._translation_timing = None
+        self._translation_received_at = None
+        self._choice_hide_timer.stop()
+        self._last_reply_choices = []
+        self._last_reply_choice_texts = ()
+        if self._choice_panel:
+            self._choice_panel.clear_choices()
+        if self._result_panel:
+            self._result_panel.clear_progress()
+        if self._translate_worker:
+            self._translate_worker.cancel_pending()
+
     @Slot()
     def _manual_translate(self) -> None:
         """手动立即翻译"""
+        started_at = time.monotonic()
         if self._closing:
             return
         if self._capture_region is None:
@@ -729,14 +872,19 @@ class MainWindow(QMainWindow):
         if self._target_window:
             from src.core.capture import bring_window_to_front
             bring_window_to_front(self._target_window.hwnd)
-            import time
             time.sleep(0.1)  # 等待窗口重绘
 
         try:
-            img = capture_region(self._capture_region)
+            capture_started = time.monotonic()
+            img = capture_region(self._game_capture_region())
             if self._genshin_adaptive_enabled():
-                img = prepare_genshin_dialogue(img).image
-            self._trigger_translation(img)
+                img = self._prepare_genshin_scene(img, require_dialogue=False)
+            captured_at = time.monotonic()
+            self._trigger_translation(img, monitor_timing=WatchTiming(
+                started_at=started_at, submitted_at=captured_at,
+                capture_seconds=captured_at - capture_started,
+                ocr_seconds=0.0, ocr_samples=0, stable_seconds=0.0,
+            ))
         except Exception as e:
             self._status_bar.showMessage(f"截图失败: {e}")
 
@@ -749,52 +897,256 @@ class MainWindow(QMainWindow):
     def _on_translation_needed(self, img: Image.Image, ocr_text: str) -> None:
         """WatchWorker 发出翻译信号"""
         if self._is_watching and self.sender() is self._watch_worker:
-            self._trigger_translation(img, ocr_text)
+            submission, self._watch_submission = self._watch_submission, None
+            # The submitted observation is emitted immediately before this
+            # signal by the same worker, including explicit manual requests.
+            manual = (submission is not None and submission.manual
+                      and submission.text == normalize_ocr_text(ocr_text))
+            self._trigger_translation(
+                img, ocr_text, automatic=not manual,
+                monitor_timing=getattr(submission, "timing", None),
+            )
 
-    def _trigger_translation(self, img: Image.Image, ocr_text: str | None = None) -> None:
+    def _trigger_translation(self, img: Image.Image, ocr_text: str | None = None,
+                             *, automatic: bool = False,
+                             monitor_timing: WatchTiming | None = None) -> None:
         if self._translate_worker is None:
             return
+        self._translation_source = normalize_ocr_text(ocr_text) if automatic else None
+        self._deferred_translation = None
         mode = self._cfg.get("recognition_mode", default="ocr")
+        self._translation_received_at = None
+        scene = unpack_scene_text(ocr_text or "")
+        parts = scene_image_parts(img)
+        self._translation_timing = {
+            "monitor": monitor_timing,
+            "started_at": monitor_timing.started_at if monitor_timing else time.monotonic(),
+            "manual": not automatic,
+            "ocr_mode": "unused" if mode == "vl" else ("reused" if ocr_text is not None else "request"),
+            "only_choices": bool((scene and not scene.dialogue) or (parts and parts.dialogue is None)),
+        }
         self._translate_worker.translate(img, mode, ocr_text=ocr_text)
+
+    @Slot(object)
+    def _on_watch_observation(self, observation) -> None:
+        if not self._is_watching or self.sender() is not self._watch_worker:
+            return
+        if observation.kind == "submitted":
+            self._watch_submission = observation
+            if observation.manual:
+                return
+        self._watch_observation = observation
+        self._observe_reply_choices(observation)
+        if self._deferred_translation is not None:
+            source, result, error = self._deferred_translation
+            if self._matches_observed_dialogue(source):
+                self._deferred_translation = None
+                if error is not None:
+                    self._on_translate_error(error)
+                else:
+                    self._on_translate_result(result)
+                return
+        self._update_watch_notice()
+
+    def _suspend_reply_choices(self):
+        if self._choice_panel:
+            self._choice_panel.suspend()
+
+    def _observe_reply_choices(self, observation):
+        scene = unpack_scene_text(observation.text)
+        texts = tuple(normalize_ocr_text(text) for text in scene.choices) if scene else ()
+        if texts:
+            self._choice_hide_timer.stop()
+            if texts == self._last_reply_choice_texts and self._choice_panel:
+                self._choice_panel.show_choices(self._last_reply_choices)
+            elif observation.kind == "submitted":
+                self._suspend_reply_choices()
+        elif observation.kind == "submitted":
+            self._choice_hide_timer.stop()
+            self._suspend_reply_choices()
+        elif self._choice_panel and not self._choice_hide_timer.isActive():
+            # A one-frame detection miss should not blink the choice panel.
+            self._choice_hide_timer.start()
+
+    def _matches_observed_dialogue(self, source: str | None) -> bool:
+        observation = self._watch_observation
+        return (source is None or observation is None or
+                (observation.kind not in ("unavailable", "empty") and observation.text == source))
+
+    def _update_watch_notice(self) -> None:
+        # Per-sample OCR changes belong in the main window. Floating subtitles
+        # stay still until a translation actually starts, finishes or fails.
+        if self._watch_observation is None or self._translation_progress_timer.isActive():
+            return
+        observation = self._watch_observation
+        if observation.kind == "unavailable":
+            message = "未确认对白 · 保留上次结果"
+        elif observation.kind == "empty":
+            message = "未识别到文字 · 保留上次结果"
+        elif observation.kind == "candidate":
+            message = "正在确认新句 · 保留上次结果"
+        elif self._deferred_translation is not None:
+            message = "等待当前对白 · 保留上次结果"
+        else:
+            message = ""
+        if message:
+            self._queue_watch_status(message)
 
     # ─── Slots: 翻译结果 ─────────────────────────────────────
     @Slot()
     def _on_translate_start(self) -> None:
-        self._status_bar.showMessage("翻译中...")
-        if self._result_panel:
+        only_choices = self._translation_timing and self._translation_timing.get("only_choices")
+        if self._result_panel and not only_choices:
             self._result_panel.show_loading()
+        self._on_translate_progress("准备翻译")
+
+    @Slot(str)
+    def _on_translate_progress(self, stage: str) -> None:
+        if self._closing:
+            return
+        self._clear_watch_status()
+        self._translation_stage = stage
+        self._translation_stage_started = time.perf_counter()
+        self._translation_progress_timer.start()
+        self._update_translation_progress()
+
+    @Slot()
+    def _on_translate_queued(self) -> None:
+        self._on_translate_progress("已保留最新对白，等待上一条请求结束")
+
+    def _update_translation_progress(self) -> None:
+        if (self._closing or not self._translation_stage or not self._translate_worker
+                or not self._translate_worker._busy):
+            self._translation_progress_timer.stop()
+            return
+        elapsed = time.perf_counter() - self._translation_stage_started
+        message = f"{self._translation_stage} · {elapsed:.1f}s"
+        if self._is_watching and not self._matches_observed_dialogue(self._translation_source):
+            observation = self._watch_observation
+            waiting = "新句待确认" if observation and observation.text else "等待对白"
+            message = f"{waiting} · 上条请求处理中 · {elapsed:.1f}s"
+        self._status_bar.showMessage(message)
 
     @Slot(object)
     def _on_translate_result(self, result) -> None:
+        self._translation_progress_timer.stop()
+        self._clear_watch_status()
+        received_at = time.monotonic()
+        if self._translation_received_at is None:
+            self._translation_received_at = received_at
+        if self._is_watching and not self._matches_observed_dialogue(self._translation_source):
+            # Keep the result for a transient OCR error (A -> B -> A), without
+            # presenting A as the answer to B. Cancelling A would deadlock the
+            # watcher's text deduplication if the observation returned to A.
+            self._deferred_translation = (self._translation_source, result, None)
+            if self._result_panel:
+                self._result_panel.clear_progress()
+            self._update_watch_notice()
+            return
         warning = getattr(result, "warning", "")
         hits = getattr(result, "glossary_hits", [])
-        status = "翻译完成 ✓" + (f" · 匹配 {len(hits)} 条原神术语" if hits else "")
+        error = getattr(result, "error", "")
+        status = (f"翻译失败，保留识别原文：{error}" if error else "翻译完成 ✓")
+        status += f" · 匹配 {len(hits)} 条原神术语" if hits else ""
         self._status_bar.showMessage(f"{status} · {warning}" if warning else status)
-        if self._result_panel:
+        display_started = time.monotonic()
+        choices = getattr(result, "choices", [])
+        has_dialogue = bool(result.corrected or result.translation)
+        if self._result_panel and (has_dialogue or not choices):
             self._result_panel.show_result(
                 corrected=result.corrected,
                 translation=result.translation,
                 original_ocr=result.original_ocr,
             )
-        if self._result_panel and not self._result_panel.isVisible():
+        elif self._result_panel:
+            self._result_panel.clear_progress()
+        if self._result_panel and has_dialogue and not self._result_panel.isVisible():
             self._result_panel.show()
+        self._last_reply_choices = choices
+        self._last_reply_choice_texts = tuple(
+            normalize_ocr_text(choice.original_ocr or choice.corrected) for choice in choices
+        )
+        if choices:
+            if self._choice_panel is None:
+                self._choice_panel = ReplyChoicesPanel()
+            self._choice_hide_timer.stop()
+            self._choice_panel.show_choices(choices)
+        elif self._choice_panel:
+            self._choice_panel.clear_choices()
+        displayed_at = time.monotonic()
+        timings = dict(getattr(result, "timings", {}))
+        trace = self._translation_timing
+        if timings or trace:
+            if trace:
+                timings["ocr_mode"] = trace["ocr_mode"]
+            self._last_timing_label.setText(format_timing_summary(
+                timings,
+                monitor=trace["monitor"] if trace else None,
+                total_seconds=max(0.0, displayed_at - trace["started_at"]) if trace else None,
+                display_seconds=max(0.0, displayed_at - display_started),
+                held_seconds=max(0.0, received_at - self._translation_received_at),
+                manual=trace["manual"] if trace else False,
+            ))
+        self._last_watch_status_at = displayed_at
+        if self._translation_source is not None:
+            self._update_watch_notice()
 
     @Slot(str)
     def _on_translate_error(self, error: str) -> None:
+        self._translation_progress_timer.stop()
+        self._clear_watch_status()
+        if self._is_watching and not self._matches_observed_dialogue(self._translation_source):
+            self._deferred_translation = (self._translation_source, None, error)
+            if self._result_panel:
+                self._result_panel.clear_progress()
+            self._update_watch_notice()
+            return
         self._status_bar.showMessage(f"翻译失败: {error}")
+        self._last_watch_status_at = time.monotonic()
         if self._result_panel:
             self._result_panel.show_error(error)
 
     @Slot(str)
     def _on_watch_status(self, status: str) -> None:
         if self._is_watching and self.sender() is self._watch_worker and not (
-            self._translate_worker and self._translate_worker.isRunning()
+            self._translate_worker and self._translate_worker._busy
         ):
-            self._status_bar.showMessage(status)
+            self._queue_watch_status(status)
+
+    def _clear_watch_status(self) -> None:
+        self._watch_status_timer.stop()
+        self._pending_watch_status = None
+
+    def _queue_watch_status(self, message: str) -> None:
+        """Coalesce routine diagnostics without delaying capture or translation."""
+        if self._closing or not self._is_watching or (
+            self._translate_worker and self._translate_worker._busy
+        ):
+            return
+        self._pending_watch_status = (self._watch_worker, message)
+        remaining = 2.0 - (time.monotonic() - self._last_watch_status_at)
+        if remaining <= 0:
+            self._flush_watch_status()
+        elif not self._watch_status_timer.isActive():
+            self._watch_status_timer.start(max(1, int(remaining * 1000) + 1))
+
+    @Slot()
+    def _flush_watch_status(self) -> None:
+        self._watch_status_timer.stop()
+        pending, self._pending_watch_status = self._pending_watch_status, None
+        if (pending is None or self._closing or not self._is_watching
+                or pending[0] is not self._watch_worker
+                or (self._translate_worker and self._translate_worker._busy)):
+            return
+        self._last_watch_status_at = time.monotonic()
+        if pending[1] != self._status_bar.currentMessage():
+            self._status_bar.showMessage(pending[1])
 
     @Slot(str)
     def _on_watch_error(self, error: str) -> None:
         if self._is_watching and self.sender() is self._watch_worker:
+            self._clear_watch_status()
+            self._last_watch_status_at = time.monotonic()
             self._status_bar.showMessage(f"监视错误: {error}")
 
     # ─── Slots: 查词 ─────────────────────────────────────────
@@ -890,7 +1242,7 @@ class MainWindow(QMainWindow):
         if self._cfg.get("game", "profile", default="generic") == "genshin":
             features = ["原神"]
             if self._genshin_adaptive_enabled():
-                features.append("动态对白")
+                features.append("对白与选项")
             if self._cfg.get("game", "genshin", "use_glossary", default=True):
                 features.append("本地术语")
             game_label = " · ".join(features)
@@ -910,6 +1262,8 @@ class MainWindow(QMainWindow):
         if self._result_panel:
             self._result_panel.show()
             self._result_panel.raise_()
+        if self._choice_panel:
+            self._choice_panel.reveal()
 
     # ─── 托盘 ────────────────────────────────────────────────
     def _tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
@@ -937,6 +1291,8 @@ class MainWindow(QMainWindow):
             self._tray.hide()
         if self._result_panel:
             self._result_panel.close()
+        if self._choice_panel:
+            self._choice_panel.close()
         if self._word_tooltip:
             self._word_tooltip.close()
         self.setEnabled(False)

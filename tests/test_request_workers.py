@@ -20,7 +20,7 @@ with patch.object(
     from src.workers.word_lookup_worker import WordLookupWorker
 
 from PIL import Image
-from PySide6.QtCore import QEventLoop, QTimer
+from PySide6.QtCore import QEventLoop, QThread, QTimer
 from PySide6.QtWidgets import QApplication
 
 
@@ -45,16 +45,24 @@ class ControlledTranslator:
             if self.fail_first:
                 raise RuntimeError("superseded request failed")
 
-    def translate_ocr(self, image, ocr_text=None):
+    def translate_ocr(self, image, ocr_text=None, *, progress_callback=None):
         name = image.info["request"]
         self.ocr_inputs.append(ocr_text)
+        if progress_callback:
+            progress_callback(f"开始 {name}")
         self._execute(name)
+        if progress_callback:
+            progress_callback(f"结束 {name}")
         return TranslationResult(corrected=name, translation=f"translated {name}")
 
-    def translate_vl(self, image, ocr_text=None):
+    def translate_vl(self, image, ocr_text=None, *, progress_callback=None):
         name = image.info["request"]
         self.vision_inputs.append(image)
+        if progress_callback:
+            progress_callback(f"开始 {name}")
         self._execute(name)
+        if progress_callback:
+            progress_callback(f"结束 {name}")
         return TranslationResult(corrected=name, translation=f"vision {name}")
 
     def lookup_word(self, selected_text, context, lookup_client=None, prompt_template=""):
@@ -232,6 +240,59 @@ class RequestWorkerTests(unittest.TestCase):
         self.assertEqual(self.result_names(results), ["A"])
         self.assertEqual(errors, [])
 
+    def test_progress_is_delivered_on_gui_thread_only_for_current_request(self):
+        fake = ControlledTranslator()
+        worker, results, errors = self.make_worker(TranslateWorker, fake)
+        progress, threads, queued = [], [], []
+        worker.progress_changed.connect(progress.append)
+        worker.progress_changed.connect(lambda _: threads.append(QThread.currentThread()))
+        worker.queued.connect(lambda: queued.append(True))
+        self.submit(worker, "A")
+        # Do not process Qt events until A's first progress event is obsolete.
+        self.assertTrue(fake.entered.wait(2))
+        self.submit(worker, "B")
+        self.submit(worker, "C")
+        fake.release.set()
+        self.wait_until(lambda: not worker._busy)
+        self.assertEqual(progress, ["开始 C", "结束 C"])
+        self.assertTrue(all(thread == self.app.thread() for thread in threads))
+        self.assertEqual(queued, [True, True])
+        self.assertEqual(self.result_names(results), ["C"])
+        self.assertGreaterEqual(results[0].timings["queue"], 0)
+        self.assertEqual(errors, [])
+
+    def test_cancelled_request_drops_progress_already_queued_for_gui(self):
+        fake = ControlledTranslator()
+        worker, results, errors = self.make_worker(TranslateWorker, fake)
+        progress = []
+        worker.progress_changed.connect(progress.append)
+        self.submit(worker, "A")
+        self.assertTrue(fake.entered.wait(2))
+        worker.cancel_pending()
+        fake.release.set()
+        self.wait_until(lambda: not worker._busy)
+        self.assertEqual(progress, [])
+        self.assertEqual(results, [])
+        self.assertEqual(errors, [])
+
+    def test_queue_duration_belongs_to_latest_request(self):
+        fake = ControlledTranslator()
+        worker, results, errors = self.make_worker(TranslateWorker, fake)
+        clock = Mock(return_value=10.0)
+        with patch("src.workers.translate_worker.time", Mock(perf_counter=clock)):
+            self.submit(worker, "A")
+            self.assertTrue(fake.entered.wait(2))
+            clock.return_value = 12.0
+            self.submit(worker, "B")
+            clock.return_value = 15.0
+            self.submit(worker, "C")
+            clock.return_value = 20.0
+            fake.release.set()
+            self.wait_until(lambda: not worker._busy)
+        self.assertEqual(results[0].timings["queue"], 5.0)
+        self.assertEqual(self.result_names(results), ["C"])
+        self.assertEqual(errors, [])
+
 
 class TranslatorInputTests(unittest.TestCase):
     def setUp(self):
@@ -287,6 +348,53 @@ class TranslatorInputTests(unittest.TestCase):
         self.client.chat_vision.assert_called_once_with("Read the screenshot", self.image)
         self.client.chat.assert_not_called()
         self.ocr.recognize.assert_not_called()
+
+    def test_manual_stages_record_local_ocr_and_model_time(self):
+        clock = Mock(return_value=10.0)
+        def read(_):
+            clock.return_value += 2.0
+            return "Hello"
+        def chat(_):
+            clock.return_value += 3.0
+            return '{"corrected":"Hello","translation":"你好"}'
+        self.ocr.recognize.side_effect = read
+        self.client.chat.side_effect = chat
+        progress = []
+        with patch("src.core.translator.time", Mock(perf_counter=clock)):
+            result = self.translator.translate_ocr(self.image, progress_callback=progress.append)
+        self.assertEqual(progress, ["本地 OCR 识别中", "等待模型翻译"])
+        self.assertEqual(result.timings, {"ocr": 2.0, "model": 3.0, "refinement": 0.0, "total": 5.0})
+
+    def test_reused_ocr_does_not_claim_local_recognition_or_sampling_time(self):
+        clock = Mock(return_value=10.0)
+        def chat(_):
+            clock.return_value += 3.0
+            return '{"corrected":"Hello","translation":"你好"}'
+        self.client.chat.side_effect = chat
+        progress = []
+        with patch("src.core.translator.time", Mock(perf_counter=clock)):
+            result = self.translator.translate_ocr(self.image, "Hello", progress_callback=progress.append)
+        self.assertEqual(progress, ["等待模型翻译"])
+        self.assertEqual(result.timings, {"ocr": 0.0, "model": 3.0, "refinement": 0.0, "total": 3.0})
+
+    def test_failed_stages_retain_elapsed_time(self):
+        for stage in ("ocr", "model"):
+            with self.subTest(stage=stage):
+                clock = Mock(return_value=10.0)
+                def fail(_):
+                    clock.return_value += 4.0
+                    raise RuntimeError("offline")
+                if stage == "ocr":
+                    self.ocr.recognize.side_effect = fail
+                    observed = None
+                else:
+                    self.client.chat.side_effect = fail
+                    observed = "Hello"
+                with patch("src.core.translator.time", Mock(perf_counter=clock)):
+                    result = self.translator.translate_ocr(self.image, observed)
+                self.assertFalse(result.success)
+                self.assertEqual(result.timings[stage], 4.0)
+                self.assertEqual(result.timings["total"], 4.0)
 
 
 if __name__ == "__main__":

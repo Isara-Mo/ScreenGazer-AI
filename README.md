@@ -29,11 +29,23 @@
 
 Automatic monitoring needs working local OCR in both recognition modes. Manual VL translation can still send an image when local OCR misses stylized text. OCR noise and long pauses within a typing animation can still affect detection; adjust the crop or preset in those cases. The status bar shows the current sampling wait and OCR time. Rapid translation/lookup requests retain only the newest queued request and discard superseded results; a request already sent to the provider cannot be recalled.
 
+Floating panels retain the latest translation without flashing through per-sample OCR states. Monitoring details and elapsed times appear only in the main window; floating panels show a fixed translating message while a request is active, then the latest result or an error. An automatic result arriving after the observed text changes is held until its source matches again; a newly submitted sentence supersedes it. This prevents an old response from being presented as the new sentence while still tolerating a transient OCR error without another API request. Explicit manual translations remain available regardless of the automatic dialogue check.
+
+**Auto adapt** uses a 0.30-second base sampling period. A new sentence needs at least two matching OCR samples and a final matching screenshot at least 0.65 seconds after the candidate first appeared. It checks text stability, so animated scenery need not stop. Capture and OCR runtime count toward the sampling period, with a short rest if processing overruns it. On an unchanged scene, idle OCR gradually backs off from 0.30 seconds to at most 0.90 seconds; inexpensive image checks continue, and image changes can prompt earlier OCR. These are bounded rules using OCR cost and idle time, not training that discovers optimal parameters for each game. Unchanged text is deduplicated before an API request.
+
+The main window retains a compact breakdown after each translation: overall duration, text confirmation (capture/crop, accumulated OCR across samples, and waiting/checking), queue, request OCR or reuse, model, optional glossary correction, other processing/display, and any wait for dialogue to return. Text-stability time overlaps confirmation and is explicitly not added twice. Overall timing starts with the first capture observing that sentence, or the start of manual capture preparation, and ends when the application writes the result to its text widgets. A manual request made while monitoring excludes any wait for an already-running OCR cycle to finish before manual capture begins. It cannot measure the earlier interval between the game's actual text change and the first sample, nor the monitor's physical display latency. Request total excludes preceding monitoring and queue time.
+
+Sampling frequency is retained. Only ordinary monitoring notices are coalesced to at most one update every two seconds; translation-stage elapsed time updates once per second, while start, completion and errors appear immediately. Floating panels stay steady. Fewer local checks would save processing but also delay discovery of new dialogue; repeated checks are not repeated API requests. Changing monitoring or game settings reuses the loaded OCR engine unless its configuration changes. The first local OCR load can still take several seconds. If complete sentences feel slow, try **Auto adapt** or **Fast subtitles**; **Slow typing** deliberately requires more confirmation. Model response time still depends on the provider.
+
 ### Genshin Impact profile
 
-Select the running game in **Target window**, click **原神对白区域** (Genshin dialogue area), then **预览识别范围** (Preview capture). This enables the Genshin profile and captures a generous lower-window area that follows the window's size. A local colour-and-layout detector removes verified gold speaker/title rows while retaining the width and lower edge for multiline dialogue. It keeps the original pixels when uncertain. If text is already outside the capture, enlarge the selection; this cannot recover uncaptured text. Menus, dialogue choices, unusual HUD layouts and faded text may need a manual selection.
+Select the running game in **Target window**, click **原神对白区域** (Genshin dialogue area), then **预览识别范围** (Preview capture). This enables the Genshin profile and captures a generous lower-window area that follows the window's size. A local colour-and-layout detector removes verified gold speaker/title rows while retaining the width and lower edge for multiline dialogue. Automatic monitoring only runs OCR and translation on confirmed dialogue or reply choices: it waits after a conversation ends instead of translating health bars, levels or key prompts, and resumes when dialogue returns. Manual translation retains the original pixels when detection is uncertain, including while monitoring. If text is already outside the capture, enlarge the selection; this cannot recover uncaptured text. Menus, replies using other icon designs, dialogue without a gold speaker, and very short or faded text may need manual translation.
+
+Reply choices with the standard three-dot speech bubble are detected separately, including wrapped lines. A bound Genshin window automatically includes the lower/right reply area at runtime without overwriting the saved selection; unbound captures must include the choices and their bubble icons. NPC dialogue and all replies are translated together in one request, with explicit indices to prevent reordering. A draggable, resizable **回复选项** panel appears on the left with numbered Chinese/English pairs; use A−/A+ to adjust its font. Select the actual answer in the game. Repeated observations do not redraw cards, and a dismissed group stays hidden until the choices change or **显示全部浮窗** is used. Disappearing choices are hidden after a short confirmation delay; returning unchanged choices can reuse the previous translation. Invalid/missing model indices retain the source option and mark the missing translation. Each OCR sampling round includes all detected text blocks, so replies add local OCR work but are not separate API requests.
 
 **Settings → 游戏适配** provides the dialogue-crop switch, glossary switch and optional `English = 中文` overrides. Generic mode retains its existing behaviour. The bundled offline glossary contains 6,454 source-backed mappings in the 2026-09-19 snapshot, including NPCs, places and organizations. It comes from the community [Genshin Dictionary open data](https://genshin-dictionary.com/en/opendata); provenance and filtering rules are recorded in `src/data/genshin_terms.SOURCES.md`.
+
+The preview is a snapshot taken when opened. Its confirmation message indicates whether automatic dialogue detection passed. **保存捕获原图** (Save original capture) exports that snapshot at its original resolution; a screenshot of the scaled preview can lose the pixel details needed to diagnose missed detection.
 
 The application keeps the original English and attaches only terms matched in the current dialogue to the translation prompt. Long names take precedence, word boundaries prevent substring replacements, and ordinary meanings of words such as Amber/Will remain subject to context. This improves terminology guidance without claiming identical official dialogue or guaranteed model compliance. Lookup explanations use the same game context. Missing or outdated names can be corrected in the custom list.
 
@@ -102,11 +114,24 @@ uv run main.py
 
 两种模式的自动监视都需要可用的本地 OCR；如果本地 OCR 无法识别艺术字体，可以使用 **立即翻译** 手动调用 VL 识图。文字识别抖动、逐字显示过程中的长停顿仍可能影响检测，优先调整选区或切换监视方案。状态栏会显示当前采样等待和 OCR 耗时，首次模型加载可能较慢。快速连续翻译或查词时只保留最新的待处理请求，并忽略过时结果；已发送给模型提供商的请求无法撤回。
 
+等待对白或确认新句时，浮窗保持最近一次译文，不随每轮 OCR 状态闪动。检测详情和等待秒数只在主窗口显示；浮窗仅在真正开始翻译时显示固定提示，完成后更新结果，失败时显示错误。新句已经被观察到时，上一句迟到的自动翻译会暂存；只有识别文本恢复一致才显示，新句提交后则淘汰旧结果。这能避免把旧响应当成新句答案，也不会因短暂 OCR 抖动重复调用 API。手动翻译不受这项自动显示检查限制。
+
+**自动适应的规则**：以 **0.30 秒**为基础采样周期，新句需要至少 **2 次 OCR 一致**，且最后一张一致的截图距离候选文字首次出现至少 **0.65 秒**。判断的是文字稳定，无需等动态背景静止。周期内已花在截图和 OCR 上的时间会扣除，处理超时时只保留短暂休息；画面长期未变化时，本地 OCR 复查间隔逐步从 **0.30 秒放宽到最多 0.90 秒**，仍保留较快的图像检查，画面变化也可提前触发 OCR。这是根据识别耗时和空闲时长调整的规则，不会训练出各游戏的最优参数。同一句文字会先去重，不会因反复检测而重复调用 API。
+
+每次翻译完成后，主窗口保留简洁的耗时汇总：**整体 → 确认文字（截图/裁切、累计 OCR 及次数、等待/判断）→ 排队 → 请求 OCR 或复用 → 模型 → 可选术语校正 → 其他处理/显示**；如旧结果曾暂存，还会列出等待对白恢复的耗时。“文字保持一致”与确认过程重叠，明确注明不再相加。整体从第一次采到这句文字的截图开始，手动翻译则从开始准备采集算起，到程序将结果写入文本框结束；监视中手动触发时，不包含采集前等待上一轮 OCR 结束的时间。整体也不包含无法测量的“游戏实际换句到首次采样”间隔，不代表显示器实际呈现的时延。“请求合计”仍单独保留，不包含此前监视和排队。
+
+本次**保留实际采样频率，只合并界面提示**：普通监视状态最多每 **2 秒**刷新一次，翻译阶段计时每 **1 秒**刷新，开始、完成和错误立即显示；中文和英文浮窗保持稳定。减少本地检测虽能节省计算，也会增加发现新句的延迟，频繁检测本身不等于频繁请求 API。调整监视方案、选区或游戏设置时复用已加载的 OCR，只有 OCR 配置变更才重建；首次加载仍可能需要几秒。整句字幕感觉慢时先选 **自动适应** 或 **快速字幕**；**慢速打字** 会有意增加确认。模型返回速度仍取决于服务端。
+
 ### 原神专用适配
 
 1. 主窗口 **目标窗口** 选择正在运行的原神，点击 **原神对白区域**。这会启用原神适配，并使用随窗口尺寸变化的底部宽选区，覆盖长短对白及可选称号。
-2. 点击 **预览识别范围**，查看捕获原图与实际识别画面。程序联合检测金色标题和白色正文，动态排除人名、称号；横向与底部不缩窄，以保留多行文字。定位不可靠时保留原图。如果预览的原图已经漏字，应手动扩大选区，无法恢复框外文字。菜单、选项、特殊界面及淡入中的文字可能需要手动框选。
+2. 点击 **预览识别范围**，查看捕获原图与处理结果。程序联合检测金色标题和白色正文，动态排除人名、称号；横向与底部不缩窄，以保留多行文字。自动监视只识别已确认的对白或回复选项：对话结束后显示“等待原神对白”，暂停 OCR 和翻译，避免把血条、等级和按键提示送入模型；对白重新出现后自动恢复。定位不可靠时，**手动翻译**仍可使用完整原图，在监视期间也可手动触发。如果预览的原图已经漏字，应手动扩大选区，无法恢复框外文字。菜单、使用其他图标的选项、无金色人名、极短或淡入中的台词可能需要手动框选翻译。
+
+原神右侧带标准三点气泡的回复选项现可独立识别，支持同一选项内的多行文字。绑定原神窗口时会在运行时补足下方及右侧范围，不覆盖已保存的选区；未绑定窗口时需把选项文字及气泡图标一起框入。角色台词与所有选项合并为一次翻译请求，并用明确编号匹配。新增左侧“回复选项”浮窗，按游戏中从上到下排列中英对照，可拖动、缩放和调字号；实际选择仍在游戏内操作。相同内容不重复刷新，手动隐藏后同组选项不再自动弹出，可用“显示全部浮窗”恢复。选项消失后短暂确认再隐藏；相同选项重新出现可复用上次译文。模型遗漏或返回异常编号时保留对应英文并标明缺少译文。每轮 OCR 包含对白及各选项的分块识别，因此增加本地识别工作，但不会为每个选项分别调用翻译 API。
+
 3. **设置 → 游戏适配** 可分别关闭动态裁切或术语约束，也可切回通用模式。自定义译名每行填写 `English = 中文`，例如 `Pacal = 帕加尔`；可以补充或覆盖内置译名。重复、空值或无效格式会在保存前提示所在行。
+
+预览是打开时的单张截图，顶部会明确标明是否通过自动对白判断。漏识别时可点击 **保存捕获原图**，导出同一次捕获的原始分辨率 PNG；直接截取缩小后的预览会改变字形像素，可能无法复现原来的漏检。
 
 本次随附 **6,454 条中英对应**（2026-09-19 快照），包括人名、NPC、地点、组织等，来自 [Genshin Dictionary 社区开放数据](https://genshin-dictionary.com/en/opendata)。例如 `Odette → 奥黛塔`、`Pacal → 帕加尔`、`Children of Echoes → 回声之子`。来源、获取时间、原始数据摘要、过滤规则和条款链接见 `src/data/genshin_terms.SOURCES.md`。这是社区整理数据，可能有缺漏或版本滞后。
 

@@ -761,14 +761,17 @@ class ConfigDialog(QDialog):
         group_layout = QVBoxLayout(self._genshin_group)
         group_layout.setSpacing(10)
 
-        self._genshin_adaptive_dialogue = QCheckBox("自动排除金色人名 / 称号，适应多行对白")
+        self._genshin_adaptive_dialogue = QCheckBox("自动识别对白与回复选项，排除人名 / 称号及血条")
         self._genshin_use_glossary = QCheckBox("使用本地中英术语表，优先采用原神译名")
         group_layout.addWidget(self._genshin_adaptive_dialogue)
 
         capture_note = QLabel(
-            "保存后，在主窗口选择游戏窗口，点击“原神对白区域”，一次覆盖底部多行台词。"
-            "也可以手动框大一些并用“预览识别范围”检查，范围应同时包含人名、称号和完整对白。"
+            "保存后，在主窗口选择游戏窗口，点击“原神对白区域”，覆盖底部台词和右侧回复选项。"
+            "已有绑定窗口的选区会自动补足选项范围；未绑定窗口时应手动框入人名、称号、完整对白和选项气泡。"
             "识别时会根据金色人名 / 称号的位置排除标题；框外的文字无法恢复。"
+            "带三点气泡的回复选项按从上到下编号，在独立浮窗中显示中英对照。请仍在游戏内选择。"
+            "未确认对白或选项时暂停自动翻译，避免识别血条与按键。"
+            "无金色人名、极短或淡入中的台词可能暂缓自动翻译，此时可使用手动翻译。"
         )
         capture_note.setWordWrap(True)
         capture_note.setStyleSheet("color: #94a3b8; font-size: 11px;")
@@ -902,7 +905,7 @@ class ConfigDialog(QDialog):
         self._poll_interval.setSingleStep(0.1)
         self._poll_interval.setDecimals(1)
         self._poll_interval.setSuffix(" 秒")
-        self._poll_interval.setToolTip("本地 OCR 的基础检测间隔。间隔越短响应越快，但 CPU 占用可能增加。")
+        self._poll_interval.setToolTip("从本轮截图开始计算检测周期，已用的截图与 OCR 时间会扣除；耗时超出周期时仅短暂休息。间隔越短响应越快，但 CPU 占用可能增加。")
         custom_layout.addRow("基础 OCR 间隔:", self._poll_interval)
 
         self._stability_count = QSpinBox()
@@ -944,7 +947,7 @@ class ConfigDialog(QDialog):
     def _on_watcher_preset_changed(self, _index: int = -1) -> None:
         preset = self._watcher_preset.currentData()
         descriptions = {
-            "auto": "依据本地 OCR 耗时和文字空闲时长自动调整检测频率，在响应速度和性能之间取得平衡。无需调整下面的手动参数。",
+            "auto": "检测周期会扣除截图与 OCR 耗时；对白空闲时减少 OCR，继续快速检查画面。无需调整下面的手动参数。",
             "fast": "更频繁地检查文字并缩短稳定等待，适合快速切换的完整字幕；逐字出现的文本可能会较早翻译。",
             "stable": "延长文本稳定等待，适合慢速打字或逐字显示的对话；完整句子的翻译会稍晚出现。",
             "custom": "使用下方保存的手动参数。建议先调 OCR 间隔和文本稳定次数，再考虑帧变化提示阈值。",

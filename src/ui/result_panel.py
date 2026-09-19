@@ -56,7 +56,7 @@ QLabel.titleLabelZh {
     color: #34d399; font-size: 12px; font-weight: bold;
 }
 QLabel.statusLabel {
-    color: #4b5563; font-size: 11px;
+    color: #cbd5e1; font-size: 12px;
 }
 
 /* 英文文本编辑框 */
@@ -455,7 +455,7 @@ class ChinesePanel(FloatingSubPanel):
         self._loading_label.hide()
         self._status_label.show()
         self._chinese_edit.setPlainText(translation)
-        self._status_label.setText("翻译完成 ✓")
+        self._status_label.setText("最近翻译 ✓")
         self.show()
         self.raise_()
 
@@ -647,7 +647,7 @@ class EnglishPanel(FloatingSubPanel):
             self._ocr_btn.hide()
             self._ocr_btn.setText("📄 OCR原文")
 
-        self._status_label.setText("就绪")
+        self._status_label.setText("最近翻译 ✓")
         self.show()
         self.raise_()
 
@@ -864,7 +864,7 @@ class CombinedPanel(FloatingSubPanel):
             self._ocr_btn.hide()
             self._ocr_btn.setText("📄 OCR原文")
 
-        self._status_label.setText("翻译完成 ✓")
+        self._status_label.setText("最近翻译 ✓")
         self.show()
         self.raise_()
 
@@ -1004,6 +1004,12 @@ class ResultPanel:
             self._english_panel.show_loading()
         else:
             self._combined_panel.show_loading()
+
+    def clear_progress(self) -> None:
+        """A cancelled request leaves the previous dialogue available."""
+        for panel in (self._chinese_panel, self._english_panel, self._combined_panel):
+            panel._loading_label.hide()
+            panel._status_label.show()
 
     def show_result(self, corrected: str, translation: str, original_ocr: str = "") -> None:
         if self._split_mode:
