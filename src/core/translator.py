@@ -6,10 +6,15 @@ Translator - coordinates OCR + LLM or VL LLM for translation
 from __future__ import annotations
 
 import time
+import threading
+from typing import TYPE_CHECKING
 from PIL import Image
 
 from src.core.llm_client import LLMClient, parse_json_response
 from src.core.ocr_engine import OCREngine
+
+if TYPE_CHECKING:
+    from src.core.glossary import GameGlossary
 
 
 def _safe_format(template: str, **kwargs) -> str:
@@ -31,11 +36,15 @@ class TranslationResult:
         translation: str = "",
         original_ocr: str = "",
         error: str = "",
+        glossary_hits: list[tuple[str, str]] | None = None,
+        warning: str = "",
     ) -> None:
         self.corrected = corrected          # 矫正后的英文
         self.translation = translation      # 中文翻译
         self.original_ocr = original_ocr   # OCR 原始识别文本（模式1）
         self.error = error                  # 错误信息（若有）
+        self.glossary_hits = glossary_hits or []
+        self.warning = warning
 
     @property
     def success(self) -> bool:
@@ -62,19 +71,48 @@ class Translator:
         ocr_engine: OCREngine | None = None,
         translate_text_prompt: str = "",
         translate_vl_prompt: str = "",
+        ocr_lock=None,
+        game_profile: str = "generic",
+        glossary: GameGlossary | None = None,
     ) -> None:
         self._llm = llm_client
         self._ocr = ocr_engine
         self._text_prompt_tpl = translate_text_prompt
         self._vl_prompt = translate_vl_prompt
+        self._ocr_lock = ocr_lock or threading.Lock()
+        self._game_profile = game_profile
+        self._glossary = glossary if game_profile == "genshin" else None
 
-    def translate_ocr(self, image: Image.Image) -> TranslationResult:
+    def _game_hint(self, text: str = "", *, vision: bool = False) -> str:
+        if self._game_profile != "genshin":
+            return ""
+        hint = (
+            "\n\nGame context: Genshin Impact. Translate the dialogue into Simplified Chinese. "
+            "Keep the corrected field in the original English for language learning; "
+            "do not substitute Chinese names into the English text."
+        )
+        if vision:
+            hint += (
+                " Read all lines of the white dialogue body. Exclude the gold speaker name, "
+                "gold title, decorative separator and advance/continue icon. "
+                "Do not invent dialogue if it is absent."
+            )
+        if self._glossary:
+            hint += self._glossary.prompt_hint(text)
+        return hint
+
+    def _glossary_hits(self, text: str) -> list[tuple[str, str]]:
+        if not self._glossary:
+            return []
+        return [(term.english, term.chinese) for term in self._glossary.match(text)]
+
+    def translate_ocr(self, image: Image.Image, ocr_text: str | None = None) -> TranslationResult:
         """
         模式1: OCR + 文本 LLM
         1. 使用 OCR 引擎识别图像文字
         2. 将识别结果发送给文本 LLM 进行矫正和翻译
         """
-        if self._ocr is None:
+        if ocr_text is None and self._ocr is None:
             return TranslationResult(error="未配置 OCR 引擎")
 
         print("\n" + "=" * 20 + " 翻译耗时统计 (OCR模式) " + "=" * 20)
@@ -82,7 +120,9 @@ class Translator:
 
         # Step 1: OCR 识别
         try:
-            ocr_text = self._ocr.recognize(image)
+            if ocr_text is None:
+                with self._ocr_lock:
+                    ocr_text = self._ocr.recognize(image)
         except Exception as e:
             return TranslationResult(error=f"OCR 识别失败: {e}")
 
@@ -94,6 +134,7 @@ class Translator:
 
         # Step 2: LLM 矫正 + 翻译
         prompt = _safe_format(self._text_prompt_tpl, text=ocr_text)
+        prompt += self._game_hint(ocr_text)
         messages = [{"role": "user", "content": prompt}]
 
         try:
@@ -108,6 +149,7 @@ class Translator:
                 corrected=data.get("corrected", ocr_text),
                 translation=data.get("translation", ""),
                 original_ocr=ocr_text,
+                glossary_hits=self._glossary_hits(ocr_text),
             )
         except Exception as e:
             return TranslationResult(
@@ -116,7 +158,7 @@ class Translator:
                 error=f"LLM 翻译失败: {e}",
             )
 
-    def translate_vl(self, image: Image.Image) -> TranslationResult:
+    def translate_vl(self, image: Image.Image, ocr_text: str | None = None) -> TranslationResult:
         """
         模式2: VL 大模型直接识别 + 翻译
         将截图直接发送给 VL 模型进行识别和翻译
@@ -124,16 +166,49 @@ class Translator:
         print("\n" + "=" * 20 + " 翻译耗时统计 (VL模式) " + "=" * 20)
         t_start = time.perf_counter()
         try:
-            response = self._llm.chat_vision(self._vl_prompt, image)
+            prompt = self._vl_prompt + self._game_hint(ocr_text or "", vision=True)
+            response = self._llm.chat_vision(prompt, image)
             t_llm = time.perf_counter()
             print(f"[耗时] VL模型响应: {t_llm - t_start:.2f} 秒")
             print(f"[耗时] 总计用时: {t_llm - t_start:.2f} 秒")
             print("=" * 62)
             
             data = parse_json_response(response)
+            corrected = data.get("corrected", "")
+            translation = data.get("translation", "")
+            warning = ""
+            # Manual VL may have no OCR hint, and vision can read names OCR
+            # missed. Refine at most once with the same VL model so VL-only
+            # configurations do not require a separate text model.
+            if self._glossary and corrected:
+                observed = {(term.english, term.chinese) for term in self._glossary.match(ocr_text or "")}
+                matches = self._glossary.match(corrected)
+                needs_refinement = any(
+                    (term.english, term.chinese) not in observed
+                    or (not term.conditional and term.chinese not in translation)
+                    for term in matches
+                )
+                if needs_refinement:
+                    try:
+                        refinement = (
+                            self._vl_prompt + self._game_hint(corrected, vision=True)
+                            + "\n\nRevise the Chinese translation using the glossary and the image. "
+                            "Do not change or translate the English corrected text. "
+                            "Return JSON with corrected and translation fields.\n"
+                            + "English dialogue:\n" + corrected
+                        )
+                        revised = parse_json_response(self._llm.chat_vision(refinement, image))
+                        revised_translation = revised.get("translation", "")
+                        if not isinstance(revised_translation, str) or not revised_translation.strip():
+                            raise ValueError("校正未返回中文译文")
+                        translation = revised_translation
+                    except Exception as exc:
+                        warning = f"术语校正失败，保留首轮译文：{exc}"
             return TranslationResult(
-                corrected=data.get("corrected", ""),
-                translation=data.get("translation", ""),
+                corrected=corrected,
+                translation=translation,
+                glossary_hits=self._glossary_hits(corrected),
+                warning=warning,
             )
         except Exception as e:
             return TranslationResult(error=f"VL 模型识别失败: {e}")
@@ -159,6 +234,13 @@ class Translator:
             context=context,
             selected=selected_text,
         )
+        if self._game_profile == "genshin":
+            prompt += (
+                "\n\nThis selection is from Genshin Impact. Explain the selection in this "
+                "game context. Keep the word field in the selected English."
+            )
+            if self._glossary:
+                prompt += self._glossary.prompt_hint(context + "\n" + selected_text, for_lookup=True)
         messages = [{"role": "user", "content": prompt}]
         try:
             response = client.chat(messages)
